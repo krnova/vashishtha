@@ -26,7 +26,7 @@ cd vashishtha
 
 # 2. Install dependencies
 apt install python rust python-cryptography
-pip install -r requirements.txt --break-system-packages
+[ "$(uname -o 2>/dev/null)" = "Android" ] && export ANDROID_API_LEVEL=28; pip install -r requirements.txt --break-system-packages
 
 # 3. Configure
 cp config.example.json config.json
