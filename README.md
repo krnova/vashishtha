@@ -25,6 +25,7 @@ git clone https://github.com/krnova/vashishtha
 cd vashishtha
 
 # 2. Install dependencies
+apt install python rust python-cryptography
 pip install -r requirements.txt --break-system-packages
 
 # 3. Configure
