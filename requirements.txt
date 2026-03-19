@@ -1,0 +1,25 @@
+# Core
+flask
+python-dotenv
+
+# LLM
+google-genai>=1.0.0
+openai
+
+# Translation(abhi gaand fat rahi h cpu ki)
+#argostranslate
+#langdetect
+
+# Voice(llvmlite ko armpython nahi pasand)
+#openai-whisper
+#pyttsx3
+
+# Web tools
+requests
+beautifulsoup4
+
+# Utils
+python-dateutil
+
+# Phase 3 (uncomment when needed)
+# playwright

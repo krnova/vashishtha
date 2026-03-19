@@ -1,0 +1,60 @@
+{
+  "api": {
+    "provider": "nim",
+    "models": {
+      "gemini": "gemini-2.0-flash",
+      "nim": "nvidia/nemotron-3-super-120b-a12b"
+    },
+    "max_tokens": 2048,
+    "temperature": 0.7,
+    "thinking": {
+      "enabled": false,
+      "max_tokens": 1024
+    }
+  },
+  "agent": {
+    "max_loop_iterations": 20,
+    "memory_window": 20
+  },
+  "identity": {
+    "display_name": "Vashishtha",
+    "personality": "adaptive",
+    "language": "en",
+    "formality": "auto"
+  },
+  "voice": {
+    "enabled": false,
+    "whisper_model": "base",
+    "tts_engine": "espeak",
+    "wake_word": null
+  },
+  "interfaces": {
+    "api_port": 5000,
+    "webui_port": 3000
+  },
+  "device": {
+    "root_available": false,
+    "root_confirm_always": true,
+    "termux_api": false
+  },
+  "translation": {
+    "default_from": "auto",
+    "default_to": "hi",
+    "max_loaded_models": 2
+  },
+  "projects": {
+    "active": null
+  },
+  "sandbox": {
+    "timeout": 30,
+    "binaries": {
+      "python3": "/data/data/com.termux/files/usr/bin/python3",
+      "node": "/data/data/com.termux/files/usr/bin/node",
+      "java": "/data/data/com.termux/files/usr/bin/java",
+      "javac": "/data/data/com.termux/files/usr/bin/javac"
+    },
+    "lib_paths": [
+      "/data/data/com.termux/files/usr/lib"
+    ]
+  }
+}

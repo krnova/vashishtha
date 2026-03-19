@@ -1,0 +1,42 @@
+# Environment
+.env
+config.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Memory & data — personal, never commit
+memory_store/sessions/
+memory_store/embeddings/
+memory_store/long_term.json
+
+# Code Runner sandbox — auto-generated, never commit
+sandbox/
+
+# Session state
+.last_session
+.last_status
+
+# Argos models (large binary files)
+~/.argos-translate/
+
+# Logs
+*.log
+logs/
+
+# Node
+node_modules/
+npm-debug.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

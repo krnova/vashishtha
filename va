@@ -1,0 +1,180 @@
+#!/bin/bash
+# va — Vashishtha CLI
+# Usage:
+#   va              → cd ~/vashishtha
+#   va run          → start the agent
+#   va query MSG         → reply only
+#   va query -v MSG      → full JSON
+#   va query -t MSG      → reply + thinking (tool calls AND top-level decision)
+#   va session           → current session ID
+#   va new-session       → clear session
+
+VASHISHTHA_DIR="$HOME/vashishtha"
+API_URL="http://127.0.0.1:5000"
+SESSION_FILE="$VASHISHTHA_DIR/.last_session"
+STATUS_FILE="$VASHISHTHA_DIR/.last_status"
+
+GOLD='\033[38;5;220m'
+DIM='\033[2m'
+CYAN='\033[38;5;51m'
+MAGENTA='\033[38;5;177m'
+RESET='\033[0m'
+
+_get_session() {
+  [ -f "$SESSION_FILE" ] && cat "$SESSION_FILE"
+}
+
+_save_session() {
+  echo "$1" > "$SESSION_FILE"
+}
+
+_get_status() {
+  [ -f "$STATUS_FILE" ] && cat "$STATUS_FILE"
+}
+
+_save_status() {
+  echo "$1" > "$STATUS_FILE"
+}
+
+_clear_status() {
+  rm -f "$STATUS_FILE"
+}
+
+case "$1" in
+  "")
+    cd "$VASHISHTHA_DIR" || exit 1
+    exec "$SHELL"
+    ;;
+
+  run)
+    python "$VASHISHTHA_DIR/main.py"
+    ;;
+
+  query)
+    shift
+    VERBOSE=false
+    THINKING=false
+
+    while true; do
+      case "$1" in
+        -v) VERBOSE=true; shift ;;
+        -t) THINKING=true; shift ;;
+        *) break ;;
+      esac
+    done
+
+    if [ $# -eq 0 ]; then
+      echo "Usage: va query [-v|-t] <message>"
+      exit 1
+    fi
+
+    MESSAGE="$*"
+    SESSION=$(_get_session)
+    MSG_JSON=$(printf '%s' "$MESSAGE" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().strip()))')
+
+    if [ -n "$SESSION" ]; then
+      PAYLOAD="{\"message\": $MSG_JSON, \"session_id\": \"$SESSION\"}"
+    else
+      PAYLOAD="{\"message\": $MSG_JSON}"
+    fi
+
+    # If last response was a confirmation request, inject confirming:true
+    LAST_STATUS=$(_get_status)
+    if [ "$LAST_STATUS" = "confirm" ]; then
+      PAYLOAD=$(printf '%s' "$PAYLOAD" | python3 -c 'import json,sys; d=json.load(sys.stdin); d["confirming"]=True; print(json.dumps(d))')
+    fi
+
+    # -t flag: inject thinking:true into payload
+    if $THINKING; then
+      PAYLOAD=$(printf '%s' "$PAYLOAD" | python3 -c 'import json,sys; d=json.load(sys.stdin); d["thinking"]=True; print(json.dumps(d))')
+    fi
+
+    RESPONSE=$(curl -s -X POST "$API_URL/chat" \
+      -H "Content-Type: application/json" \
+      -d "$PAYLOAD")
+
+    NEW_SESSION=$(echo "$RESPONSE" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("session_id",""))' 2>/dev/null)
+    [ -n "$NEW_SESSION" ] && _save_session "$NEW_SESSION"
+
+    # Save response status so next query knows if we're in a confirmation flow
+    NEW_STATUS=$(echo "$RESPONSE" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("status",""))' 2>/dev/null)
+    if [ "$NEW_STATUS" = "confirm" ]; then
+      _save_status "confirm"
+    else
+      _clear_status
+    fi
+
+    if $VERBOSE; then
+      echo "$RESPONSE" | jq
+    elif $THINKING; then
+      # Show thinking per tool action + top-level thinking + final reply
+      echo "$RESPONSE" | python3 -c "
+import json, sys
+
+GOLD    = '\033[38;5;220m'
+DIM     = '\033[2m'
+CYAN    = '\033[38;5;51m'
+MAGENTA = '\033[38;5;177m'
+RED     = '\033[38;5;196m'
+RESET   = '\033[0m'
+
+d = json.load(sys.stdin)
+actions = d.get('actions', [])
+top_thinking = d.get('thinking', '')
+
+# Per-tool thinking traces
+for i, a in enumerate(actions, 1):
+    thinking = a.get('thinking', '')
+    tool = a.get('tool', '')
+    result = a.get('result', '')
+    if thinking:
+        print(f'{DIM}[iter {i}] thinking:{RESET}')
+        print(f'{CYAN}{thinking}{RESET}')
+        print()
+    print(f'{DIM}[iter {i}] tool: {tool}{RESET}')
+    if tool == 'execute_code' and result:
+        print(f'{RED}{result}{RESET}')
+    print()
+
+# Top-level thinking — the final decision/response reasoning
+# Only show if it's different from the last tool's thinking
+last_tool_thinking = actions[-1].get('thinking', '') if actions else ''
+if top_thinking and top_thinking != last_tool_thinking:
+    label = '[final decision] thinking:' if actions else '[thinking:]'
+    print(f'{DIM}{label}{RESET}')
+    print(f'{MAGENTA}{top_thinking}{RESET}')
+    print()
+
+print(GOLD + d.get('reply', '') + RESET)
+"
+    else
+      echo "$RESPONSE" | jq -r '.reply' | sed 's/.*/\x1b[38;5;220m&\x1b[0m/'
+    fi
+    ;;
+
+  new-session)
+    rm -f "$SESSION_FILE"
+    _clear_status
+    echo "Session cleared."
+    ;;
+
+  session)
+    SESSION=$(_get_session)
+    if [ -n "$SESSION" ]; then
+      echo "Current session: $SESSION"
+    else
+      echo "No active session."
+    fi
+    ;;
+
+  *)
+    echo "Usage:"
+    echo "  va              — cd to vashishtha dir"
+    echo "  va run          — start the agent"
+    echo "  va query MSG         — reply only"
+    echo "  va query -v MSG      — full JSON"
+    echo "  va query -t MSG      — reply + thinking (all iterations)"
+    echo "  va session      — show current session ID"
+    echo "  va new-session  — clear session, start fresh"
+    ;;
+esac
