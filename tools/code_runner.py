@@ -164,6 +164,17 @@ def _init_sandbox(binary_map: dict[str, str]) -> None:
             if not link.exists() and not link.is_symlink():
                 link.symlink_to(real_path)
 
+    # sh symlink — point directly to bash.bin, not bash (proot can't follow symlink chains)
+    bash_bin = TERMUX_PREFIX / "bin" / "bash.bin"
+    if not bash_bin.exists():
+        bash_bin = TERMUX_PREFIX / "bin" / "bash"
+    for bin_dir in [BIN_DIR, ROOTFS_DIR / "usr" / "bin"]:
+        sh_link = bin_dir / "sh"
+        if sh_link.is_symlink() and os.readlink(sh_link) != str(bash_bin):
+            sh_link.unlink()
+        if not sh_link.exists() and not sh_link.is_symlink():
+            sh_link.symlink_to(bash_bin)
+
     SENTINEL.touch()
 
 
