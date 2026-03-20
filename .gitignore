@@ -21,6 +21,7 @@ sandbox/
 # Session state
 .last_session
 .last_status
+.vashishtha.pid
 
 # Argos models (large binary files)
 ~/.argos-translate/
