@@ -25,8 +25,7 @@ git clone https://github.com/krnova/vashishtha
 cd vashishtha
 
 # 2. Install dependencies
-apt install python rust python-cryptography
-[ "$(uname -o 2>/dev/null)" = "Android" ] && export ANDROID_API_LEVEL=28; pip install -r requirements.txt --break-system-packages
+pip install -r requirements.txt --break-system-packages
 
 # 3. Configure
 cp config.example.json config.json
@@ -45,11 +44,19 @@ On first run, Vashishtha auto-detects root and termux-api availability and updat
 # Install the va binary
 cp va $PREFIX/bin/va && chmod +x $PREFIX/bin/va
 
-va              # cd to vashishtha dir
-va run          # start the agent
-va query "your message"       # query (gold output)
-va query -v "your message"    # full JSON response
-va query -t "your message"    # with thinking traces
+va run                        # start agent daemon
+va stop                       # stop agent daemon
+va restart                    # restart agent daemon
+va status                     # daemon status + model info
+va logs                       # tail agent logs
+
+va query                      # interactive REPL (gold output)
+va query -t                   # REPL with thinking traces
+va query -v                   # REPL with verbose output
+va query "your message"       # single query
+va query -t "your message"    # single query with thinking
+va query -v "your message"    # single query verbose
+
 va new-session                # clear session
 va session                    # show current session ID
 ```

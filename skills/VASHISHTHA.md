@@ -58,7 +58,7 @@ Projects are symlinked into `~/vashishtha/projects/` and tracked in long-term me
 **To list linked projects:** `list_memory(category="project")`
 **To unlink:** `shell("rm ~/vashishtha/projects/myapp")` + `forget("project_myapp")`
 
-**Key convention:** `project_{name}` — e.g. `project_myapp`, `project_mysite`
+**Key convention:** `project_{name}` — e.g. `project_dhi`, `project_myapp`
 **Path in memory:** Always store the symlink path `~/vashishtha/projects/{name}`, not the real path.
 
 ## Web & Research Tools
@@ -104,7 +104,7 @@ Do NOT read skill files with `read_file` or `list_dir` — they are already in y
 - DEVICE.md — hardware, storage, termux-api, root
 - DEV.md — coding conventions, project structure, sandbox
 - TRANSLATE.md — translation engine status
-- DESIGN.md — UI/UX for Dhi
+- DESIGN.md — UI/UX design system
 
 ## Runtime Context
 - Python 3.13, Node.js, Git — available in Termux

@@ -323,40 +323,98 @@ def search_news(query: str) -> str:
         return f"Error: {e}"
 
 
-def search_wikipedia(query: str) -> str:
-    """Search Wikipedia and return article summary. Fast, structured, reliable."""
+def _wikipedia_summary_by_title(title: str) -> str | None:
+    """
+    Fetch Wikipedia summary by exact article title via REST API.
+    Returns formatted string or None if not found.
+    """
     try:
-        search_url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{quote_plus(query)}"
-        response = requests.get(search_url, headers=HEADERS, timeout=FETCH_TIMEOUT)
-
+        api_url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{quote_plus(title)}"
+        response = requests.get(api_url, headers=HEADERS, timeout=FETCH_TIMEOUT)
         if response.status_code == 200:
             data = response.json()
-            title = data.get("title", query)
+            t = data.get("title", title)
             desc = data.get("description", "")
             extract = data.get("extract", "")
             page_url = data.get("content_urls", {}).get("desktop", {}).get("page", "")
-
-            result = f"# {title}\n"
+            result = f"# {t}\n"
             if desc:
                 result += f"_{desc}_\n\n"
             result += extract
             if page_url:
                 result += f"\n\nSource: {page_url}"
-
             return result
+    except Exception:
+        pass
+    return None
 
-        # Fallback to search API
-        search_url = f"https://en.wikipedia.org/w/api.php?action=opensearch&search={quote_plus(query)}&limit=1&format=json"
+
+def _wikipedia_title_from_ddg(query: str) -> str | None:
+    """
+    Search DDG for '{query} wikipedia', extract Wikipedia article title from first result.
+    Returns title slug or None.
+    """
+    try:
+        ddg_query = f"{query} wikipedia"
+        url = f"https://html.duckduckgo.com/html/?q={quote_plus(ddg_query)}"
+        response = requests.get(url, headers=HEADERS, timeout=SEARCH_TIMEOUT)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+        for result in soup.select(".result")[:5]:
+            url_el = result.select_one(".result__url")
+            if not url_el:
+                continue
+            link = url_el.get_text(strip=True)
+            if not link.startswith("http"):
+                link = "https://" + link
+            parsed = urlparse(link)
+            if "wikipedia.org" in parsed.netloc and "/wiki/" in parsed.path:
+                # Extract title from path e.g. /wiki/Battle_of_Ten_Kings
+                return parsed.path.split("/wiki/")[-1]
+    except Exception:
+        pass
+    return None
+
+
+def search_wikipedia(query: str) -> str:
+    """
+    Search Wikipedia and return article summary.
+    
+    Strategy:
+    1. Direct REST API lookup by query as title
+    2. Wikipedia opensearch API fallback
+    3. DDG search '{query} wikipedia' → extract correct title → REST API
+    """
+    # Step 1: direct lookup
+    result = _wikipedia_summary_by_title(query)
+    if result:
+        return result
+
+    # Step 2: opensearch fallback
+    try:
+        search_url = f"https://en.wikipedia.org/w/api.php?action=opensearch&search={quote_plus(query)}&limit=3&format=json"
         response = requests.get(search_url, headers=HEADERS, timeout=FETCH_TIMEOUT)
         data = response.json()
+        if data[1] and data[3]:
+            # Try each opensearch result
+            for page_url in data[3][:3]:
+                parsed = urlparse(page_url)
+                if "/wiki/" in parsed.path:
+                    title_slug = parsed.path.split("/wiki/")[-1]
+                    result = _wikipedia_summary_by_title(title_slug)
+                    if result:
+                        return result
+    except Exception:
+        pass
 
-        if data[1]:
-            return fetch_page(data[3][0]) if data[3] else f"No Wikipedia article found for: {query}"
+    # Step 3: DDG search → extract Wikipedia title → REST API
+    title_slug = _wikipedia_title_from_ddg(query)
+    if title_slug:
+        result = _wikipedia_summary_by_title(title_slug)
+        if result:
+            return result
 
-        return f"No Wikipedia article found for: {query}"
-
-    except Exception as e:
-        return f"Error: {e}"
+    return f"No Wikipedia article found for: {query}"
 
 
 # ── Deep Search ───────────────────────────────────────────────────────────────

@@ -1,7 +1,7 @@
 # Device Skill — Vashishtha
 
 ## Device
-Rooted Android, Termux
+Android, Termux
 Root available via `su -c "command"` — always confirm before use.
 
 ## Availability

@@ -1,24 +1,39 @@
 #!/bin/bash
 # va — Vashishtha CLI
+#
 # Usage:
-#   va              → cd ~/vashishtha
-#   va run          → start the agent
-#   va query MSG         → reply only
-#   va query -v MSG      → full JSON
-#   va query -t MSG      → reply + thinking (tool calls AND top-level decision)
-#   va session           → current session ID
-#   va new-session       → clear session
+#   va run              start daemon (background, PID managed)
+#   va stop             stop daemon
+#   va restart          restart daemon
+#   va status           show daemon status
+#   va logs             tail daemon logs
+#   va query            interactive REPL (default mode)
+#   va query -t         interactive REPL with thinking traces
+#   va query -v         interactive REPL with verbose parsed output
+#   va query MSG        single shot query
+#   va new-session      clear current session
+#   va session          show current session ID
+#   va                  cd to vashishtha dir
 
 VASHISHTHA_DIR="$HOME/vashishtha"
 API_URL="http://127.0.0.1:5000"
 SESSION_FILE="$VASHISHTHA_DIR/.last_session"
 STATUS_FILE="$VASHISHTHA_DIR/.last_status"
+PID_FILE="$VASHISHTHA_DIR/.vashishtha.pid"
+LOG_FILE="$HOME/.vashishtha.log"
 
+# ── Colors ────────────────────────────────────────────────────────────────────
 GOLD='\033[38;5;220m'
 DIM='\033[2m'
 CYAN='\033[38;5;51m'
 MAGENTA='\033[38;5;177m'
+RED='\033[38;5;196m'
+GREEN='\033[38;5;82m'
+ORANGE='\033[38;5;208m'
+BLUE='\033[38;5;75m'
 RESET='\033[0m'
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 _get_session() {
   [ -f "$SESSION_FILE" ] && cat "$SESSION_FILE"
@@ -40,75 +55,95 @@ _clear_status() {
   rm -f "$STATUS_FILE"
 }
 
-case "$1" in
-  "")
-    cd "$VASHISHTHA_DIR" || exit 1
-    exec "$SHELL"
-    ;;
+_is_running() {
+  [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null
+}
 
-  run)
-    exec python "$VASHISHTHA_DIR/main.py"
-    ;;
+_check_server() {
+  curl -s "$API_URL/health" > /dev/null 2>&1
+}
 
-  query)
-    shift
-    VERBOSE=false
-    THINKING=false
+# ── Core: send one message, return response JSON ──────────────────────────────
 
-    while true; do
-      case "$1" in
-        -v) VERBOSE=true; shift ;;
-        -t) THINKING=true; shift ;;
-        *) break ;;
-      esac
-    done
+_send() {
+  local message="$1"
+  local thinking="$2"   # "true" or ""
 
-    if [ $# -eq 0 ]; then
-      echo "Usage: va query [-v|-t] <message>"
-      exit 1
-    fi
+  local session
+  session=$(_get_session)
 
-    MESSAGE="$*"
-    SESSION=$(_get_session)
-    MSG_JSON=$(printf '%s' "$MESSAGE" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().strip()))')
+  local msg_json
+  msg_json=$(printf '%s' "$message" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().strip()))')
 
-    if [ -n "$SESSION" ]; then
-      PAYLOAD="{\"message\": $MSG_JSON, \"session_id\": \"$SESSION\"}"
-    else
-      PAYLOAD="{\"message\": $MSG_JSON}"
-    fi
+  local payload
+  if [ -n "$session" ]; then
+    payload="{\"message\": $msg_json, \"session_id\": \"$session\"}"
+  else
+    payload="{\"message\": $msg_json}"
+  fi
 
-    # If last response was a confirmation request, inject confirming:true
-    LAST_STATUS=$(_get_status)
-    if [ "$LAST_STATUS" = "confirm" ]; then
-      PAYLOAD=$(printf '%s' "$PAYLOAD" | python3 -c 'import json,sys; d=json.load(sys.stdin); d["confirming"]=True; print(json.dumps(d))')
-    fi
+  # Inject confirming if pending
+  if [ "$(_get_status)" = "confirm" ]; then
+    payload=$(printf '%s' "$payload" | python3 -c 'import json,sys; d=json.load(sys.stdin); d["confirming"]=True; print(json.dumps(d))')
+  fi
 
-    # -t flag: inject thinking:true into payload
-    if $THINKING; then
-      PAYLOAD=$(printf '%s' "$PAYLOAD" | python3 -c 'import json,sys; d=json.load(sys.stdin); d["thinking"]=True; print(json.dumps(d))')
-    fi
+  # Inject thinking flag
+  if [ "$thinking" = "true" ]; then
+    payload=$(printf '%s' "$payload" | python3 -c 'import json,sys; d=json.load(sys.stdin); d["thinking"]=True; print(json.dumps(d))')
+  fi
 
-    RESPONSE=$(curl -s -X POST "$API_URL/chat" \
-      -H "Content-Type: application/json" \
-      -d "$PAYLOAD")
+  local response
+  response=$(curl -s -X POST "$API_URL/chat" \
+    -H "Content-Type: application/json" \
+    -d "$payload")
 
-    NEW_SESSION=$(echo "$RESPONSE" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("session_id",""))' 2>/dev/null)
-    [ -n "$NEW_SESSION" ] && _save_session "$NEW_SESSION"
+  # Save session + status
+  local new_session
+  new_session=$(echo "$response" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("session_id",""))' 2>/dev/null)
+  [ -n "$new_session" ] && _save_session "$new_session"
 
-    # Save response status so next query knows if we're in a confirmation flow
-    NEW_STATUS=$(echo "$RESPONSE" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("status",""))' 2>/dev/null)
-    if [ "$NEW_STATUS" = "confirm" ]; then
-      _save_status "confirm"
-    else
-      _clear_status
-    fi
+  local new_status
+  new_status=$(echo "$response" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("status",""))' 2>/dev/null)
+  if [ "$new_status" = "confirm" ]; then
+    _save_status "confirm"
+  else
+    _clear_status
+  fi
 
-    if $VERBOSE; then
-      echo "$RESPONSE" | jq
-    elif $THINKING; then
-      # Show thinking per tool action + top-level thinking + final reply
-      echo "$RESPONSE" | python3 -c "
+  echo "$response"
+}
+
+# ── Output renderers ──────────────────────────────────────────────────────────
+
+_render_plain() {
+  local response="$1"
+  echo "$response" | python3 -c "
+import json, sys
+
+GOLD   = '\033[38;5;220m'
+ORANGE = '\033[38;5;208m'
+RED    = '\033[38;5;196m'
+RESET  = '\033[0m'
+
+try:
+    d = json.load(sys.stdin)
+except:
+    print(f'{RED}Error: invalid response from server{RESET}')
+    sys.exit(1)
+
+status = d.get('status', '')
+reply  = d.get('reply', '')
+
+if status == 'confirm':
+    print(ORANGE + reply + RESET)
+else:
+    print(GOLD + reply + RESET)
+"
+}
+
+_render_thinking() {
+  local response="$1"
+  echo "$response" | python3 -c "
 import json, sys
 
 GOLD    = '\033[38;5;220m'
@@ -116,65 +151,399 @@ DIM     = '\033[2m'
 CYAN    = '\033[38;5;51m'
 MAGENTA = '\033[38;5;177m'
 RED     = '\033[38;5;196m'
+ORANGE  = '\033[38;5;208m'
 RESET   = '\033[0m'
 
-d = json.load(sys.stdin)
-actions = d.get('actions', [])
-top_thinking = d.get('thinking', '')
+try:
+    d = json.load(sys.stdin)
+except:
+    print(f'{RED}Error: invalid response from server{RESET}')
+    sys.exit(1)
 
-# Per-tool thinking traces
+actions      = d.get('actions', [])
+top_thinking = d.get('thinking', '')
+status       = d.get('status', '')
+reply        = d.get('reply', '')
+
 for i, a in enumerate(actions, 1):
     thinking = a.get('thinking', '')
-    tool = a.get('tool', '')
-    result = a.get('result', '')
+    tool     = a.get('tool', '')
+    result   = a.get('result', '')
     if thinking:
         print(f'{DIM}[iter {i}] thinking:{RESET}')
-        print(f'{CYAN}{thinking}{RESET}')
+        print(f'{CYAN}{thinking.strip()}{RESET}')
         print()
     print(f'{DIM}[iter {i}] tool: {tool}{RESET}')
     if tool == 'execute_code' and result:
         print(f'{RED}{result}{RESET}')
     print()
 
-# Top-level thinking — the final decision/response reasoning
-# Only show if it's different from the last tool's thinking
 last_tool_thinking = actions[-1].get('thinking', '') if actions else ''
 if top_thinking and top_thinking != last_tool_thinking:
     label = '[final decision] thinking:' if actions else '[thinking:]'
     print(f'{DIM}{label}{RESET}')
-    print(f'{MAGENTA}{top_thinking}{RESET}')
+    print(f'{MAGENTA}{top_thinking.strip()}{RESET}')
     print()
 
-print(GOLD + d.get('reply', '') + RESET)
+if status == 'confirm':
+    print(ORANGE + reply + RESET)
+else:
+    print(GOLD + reply + RESET)
 "
+}
+
+_render_verbose() {
+  local response="$1"
+  echo "$response" | python3 -c "
+import json, sys
+
+GOLD    = '\033[38;5;220m'
+DIM     = '\033[2m'
+CYAN    = '\033[38;5;51m'
+MAGENTA = '\033[38;5;177m'
+RED     = '\033[38;5;196m'
+ORANGE  = '\033[38;5;208m'
+GREEN   = '\033[38;5;82m'
+BLUE    = '\033[38;5;75m'
+RESET   = '\033[0m'
+
+try:
+    d = json.load(sys.stdin)
+except:
+    print(f'{RED}Error: invalid response from server{RESET}')
+    sys.exit(1)
+
+status   = d.get('status', 'done')
+session  = d.get('session_id', '')
+actions  = d.get('actions', [])
+thinking = d.get('thinking', '')
+reply    = d.get('reply', '')
+pending  = d.get('pending_action')
+
+# Header
+status_color = GREEN if status == 'done' else (ORANGE if status == 'confirm' else RED)
+print(f'{DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{RESET}')
+print(f'{DIM}session:{RESET} {BLUE}{session}{RESET}  {DIM}status:{RESET} {status_color}{status}{RESET}')
+
+# Actions
+if actions:
+    print()
+    for i, a in enumerate(actions, 1):
+        tool   = a.get('tool', '')
+        args   = a.get('args', {})
+        result = a.get('result', '')
+        th     = a.get('thinking', '')
+
+        print(f'{DIM}[{i}] {tool}{RESET}')
+
+        # Args
+        args_str = json.dumps(args, ensure_ascii=False)
+        if len(args_str) < 80:
+            print(f'    {DIM}args:{RESET} {args_str}')
+        else:
+            for k, v in args.items():
+                v_str = json.dumps(v, ensure_ascii=False)
+                if len(v_str) > 80:
+                    v_str = v_str[:77] + '...'
+                print(f'    {DIM}{k}:{RESET} {v_str}')
+
+        # Result
+        if result:
+            result_lines = result.strip().splitlines()
+            if tool == 'execute_code':
+                print(f'    {DIM}result:{RESET}')
+                for line in result_lines[:20]:
+                    print(f'    {RED}{line}{RESET}')
+                if len(result_lines) > 20:
+                    print(f'    {DIM}... ({len(result_lines)-20} more lines){RESET}')
+            else:
+                preview = result_lines[0][:120] if result_lines else ''
+                suffix = ''
+                if len(result_lines) > 1:
+                    suffix = f'  {DIM}[+{len(result_lines)-1} lines]{RESET}'
+                elif len(result) > 120:
+                    suffix = f'  {DIM}[truncated]{RESET}'
+                print(f'    {DIM}result:{RESET} {preview}{suffix}')
+
+        # Thinking per tool
+        if th:
+            th_lines = th.strip().splitlines()
+            print(f'    {DIM}thinking:{RESET}')
+            for line in th_lines[:5]:
+                print(f'    {CYAN}{line}{RESET}')
+            if len(th_lines) > 5:
+                print(f'    {CYAN}... ({len(th_lines)-5} more lines){RESET}')
+        print()
+
+# Top-level thinking
+last_tool_thinking = actions[-1].get('thinking', '') if actions else ''
+if thinking and thinking != last_tool_thinking:
+    label = 'final thinking:' if actions else 'thinking:'
+    th_lines = thinking.strip().splitlines()
+    print(f'{DIM}{label}{RESET}')
+    for line in th_lines[:8]:
+        print(f'{MAGENTA}{line}{RESET}')
+    if len(th_lines) > 8:
+        print(f'{MAGENTA}... ({len(th_lines)-8} more lines){RESET}')
+    print()
+
+# Pending
+if pending:
+    print(f'{DIM}pending:{RESET} {ORANGE}{pending.get(\"tool\",\"\")} {json.dumps(pending.get(\"args\",{}))}{RESET}')
+    print()
+
+# Reply
+print(f'{DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{RESET}')
+if status == 'confirm':
+    print(ORANGE + reply + RESET)
+else:
+    print(GOLD + reply + RESET)
+"
+}
+
+# ── REPL loop ─────────────────────────────────────────────────────────────────
+
+_repl() {
+  local mode="$1"   # "plain" | "thinking" | "verbose"
+
+  if ! _check_server; then
+    printf "${RED}✗ Agent not running. Start with: va run${RESET}\n"
+    exit 1
+  fi
+
+  local session
+  session=$(_get_session)
+  if [ -n "$session" ]; then
+    printf "${DIM}Session: ${BLUE}${session}${RESET}\n"
+  fi
+
+  printf "${DIM}Vashishtha  •  exit / Ctrl+C to quit  •  new-session to reset${RESET}\n\n"
+
+  while true; do
+    if [ "$(_get_status)" = "confirm" ]; then
+      printf "${ORANGE}confirm > ${RESET}"
     else
-      echo "$RESPONSE" | jq -r '.reply' | sed 's/.*/\x1b[38;5;220m&\x1b[0m/'
+      printf "${GREEN}> ${RESET}"
+    fi
+
+    local input
+    IFS= read -r input || break
+
+    [ -z "$input" ] && continue
+
+    case "$input" in
+      exit|quit) break ;;
+      clear) clear; continue ;;
+      session)
+        printf "${DIM}Session: ${BLUE}$(_get_session)${RESET}\n"
+        continue
+        ;;
+      new-session)
+        rm -f "$SESSION_FILE"
+        _clear_status
+        printf "${DIM}Session cleared.${RESET}\n"
+        continue
+        ;;
+    esac
+
+    local thinking_flag=""
+    [ "$mode" = "thinking" ] && thinking_flag="true"
+    [ "$mode" = "verbose" ]  && thinking_flag="true"
+
+    local response
+    response=$(_send "$input" "$thinking_flag")
+
+    if [ -z "$response" ]; then
+      printf "${RED}✗ No response from server. Is the agent running?${RESET}\n"
+      continue
+    fi
+
+    echo
+    case "$mode" in
+      thinking) _render_thinking "$response" ;;
+      verbose)  _render_verbose  "$response" ;;
+      *)        _render_plain    "$response" ;;
+    esac
+    echo
+
+  done
+
+  printf "\n${DIM}Bye.${RESET}\n"
+}
+
+# ── Daemon management ─────────────────────────────────────────────────────────
+
+_daemon_start() {
+  if _is_running; then
+    printf "${ORANGE}Already running (PID $(cat "$PID_FILE"))${RESET}\n"
+    return
+  fi
+
+  nohup python "$VASHISHTHA_DIR/main.py" >> "$LOG_FILE" 2>&1 &
+  echo $! > "$PID_FILE"
+
+  local tries=0
+  printf "${DIM}Starting${RESET}"
+  while ! _check_server && [ $tries -lt 10 ]; do
+    printf "."
+    sleep 0.5
+    tries=$((tries + 1))
+  done
+  echo
+
+  if _check_server; then
+    printf "${GREEN}✓ Vashishtha running (PID $(cat "$PID_FILE"))${RESET}\n"
+  else
+    printf "${RED}✗ Server didn't respond in time. Check: va logs${RESET}\n"
+  fi
+}
+
+_daemon_stop() {
+  if ! _is_running; then
+    printf "${DIM}Not running.${RESET}\n"
+    rm -f "$PID_FILE"
+    return
+  fi
+
+  local pid
+  pid=$(cat "$PID_FILE")
+  kill "$pid" 2>/dev/null
+  sleep 1
+
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -9 "$pid" 2>/dev/null
+  fi
+
+  rm -f "$PID_FILE"
+  printf "${DIM}Stopped.${RESET}\n"
+}
+
+_daemon_status() {
+  if _is_running; then
+    local pid
+    pid=$(cat "$PID_FILE")
+    printf "${GREEN}✓ Running${RESET} — PID ${BLUE}${pid}${RESET}\n"
+    if _check_server; then
+      local info
+      info=$(curl -s "$API_URL/health" | python3 -c \
+        'import json,sys; d=json.load(sys.stdin); print(d.get("model","?"), d.get("active_sessions",0))' 2>/dev/null)
+      local model sessions
+      model=$(echo "$info" | awk '{print $1}')
+      sessions=$(echo "$info" | awk '{print $2}')
+      printf "${DIM}Model:${RESET} ${model}  ${DIM}Active sessions:${RESET} ${sessions}\n"
+    fi
+  else
+    printf "${RED}✗ Not running${RESET}\n"
+    rm -f "$PID_FILE"
+  fi
+}
+
+# ── Help ─────────────────────────────────────────────────────────────────────
+
+_show_help() {
+  printf "Usage:\n"
+  printf "  ${GREEN}va${RESET}                      help menu\n"
+  printf "  ${GREEN}va run${RESET}                  start agent daemon\n"
+  printf "  ${GREEN}va stop${RESET}                 stop agent daemon\n"
+  printf "  ${GREEN}va restart${RESET}              restart agent daemon\n"
+  printf "  ${GREEN}va status${RESET}               daemon status\n"
+  printf "  ${GREEN}va logs${RESET}                 tail agent logs\n"
+  printf "  ${GREEN}va query${RESET}                interactive REPL\n"
+  printf "  ${GREEN}va query -t${RESET}             REPL with thinking traces\n"
+  printf "  ${GREEN}va query -v${RESET}             REPL with verbose output\n"
+  printf "  ${GREEN}va query 'msg'${RESET}          single query\n"
+  printf "  ${GREEN}va query -t 'msg'${RESET}       single query with thinking\n"
+  printf "  ${GREEN}va query -v 'msg'${RESET}       single query verbose\n"
+  printf "  ${GREEN}va session${RESET}              show current session ID\n"
+  printf "  ${GREEN}va new-session${RESET}          clear session\n"
+}
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+case "$1" in
+  ""|help|--help|-h)
+    _show_help
+    ;;
+
+  run)
+    _daemon_start
+    ;;
+
+  stop)
+    _daemon_stop
+    ;;
+
+  restart)
+    _daemon_stop
+    sleep 1
+    _daemon_start
+    ;;
+
+  status)
+    _daemon_status
+    ;;
+
+  logs)
+    tail -f "$LOG_FILE"
+    ;;
+
+  query)
+    shift
+    MODE="plain"
+
+    while true; do
+      case "$1" in
+        -t) MODE="thinking"; shift ;;
+        -v) MODE="verbose";  shift ;;
+        *)  break ;;
+      esac
+    done
+
+    if [ $# -gt 0 ]; then
+      MESSAGE="$*"
+      THINKING_FLAG=""
+      [ "$MODE" = "thinking" ] && THINKING_FLAG="true"
+      [ "$MODE" = "verbose" ]  && THINKING_FLAG="true"
+
+      if ! _check_server; then
+        printf "${RED}✗ Agent not running. Start with: va run${RESET}\n"
+        exit 1
+      fi
+
+      RESPONSE=$(_send "$MESSAGE" "$THINKING_FLAG")
+
+      if [ -z "$RESPONSE" ]; then
+        printf "${RED}✗ No response from server.${RESET}\n"
+        exit 1
+      fi
+
+      case "$MODE" in
+        thinking) _render_thinking "$RESPONSE" ;;
+        verbose)  _render_verbose  "$RESPONSE" ;;
+        *)        _render_plain    "$RESPONSE" ;;
+      esac
+    else
+      _repl "$MODE"
     fi
     ;;
 
   new-session)
     rm -f "$SESSION_FILE"
     _clear_status
-    echo "Session cleared."
+    printf "${DIM}Session cleared.${RESET}\n"
     ;;
 
   session)
     SESSION=$(_get_session)
     if [ -n "$SESSION" ]; then
-      echo "Current session: $SESSION"
+      printf "Current session: ${BLUE}${SESSION}${RESET}\n"
     else
-      echo "No active session."
+      printf "${DIM}No active session.${RESET}\n"
     fi
     ;;
 
   *)
-    echo "Usage:"
-    echo "  va              — cd to vashishtha dir"
-    echo "  va run          — start the agent"
-    echo "  va query MSG         — reply only"
-    echo "  va query -v MSG      — full JSON"
-    echo "  va query -t MSG      — reply + thinking (all iterations)"
-    echo "  va session      — show current session ID"
-    echo "  va new-session  — clear session, start fresh"
+    printf "${RED}✗ Unknown command: '$1'${RESET}\n\n"
+    _show_help
     ;;
 esac
