@@ -60,7 +60,43 @@ _is_running() {
 }
 
 _check_server() {
-  curl -s "$API_URL/health" > /dev/null 2>&1
+  curl -s --max-time 2 "$API_URL/health" > /dev/null 2>&1
+}
+
+# ── Animated server wait ──────────────────────────────────────────────────────
+
+_wait_for_server() {
+  local max_tries="${1:-20}"
+  local delay="${2:-0.5}"
+
+  # Spinner in background subshell
+  (
+    local i=0
+    local frames=("   " ".  " ".. " "...")
+    while true; do
+      printf "\r${DIM}Starting${frames[$((i % 4))]}${RESET}"
+      sleep 0.15
+      i=$((i + 1))
+    done
+  ) &
+  local _spinner_pid=$!
+
+  local tries=0
+  local _result=1
+  while [ $tries -lt "$max_tries" ]; do
+    if _check_server; then
+      _result=0
+      break
+    fi
+    sleep "$delay"
+    tries=$((tries + 1))
+  done
+
+  kill "$_spinner_pid" 2>/dev/null
+  wait "$_spinner_pid" 2>/dev/null
+  printf "\r\033[K"   # erase the spinner line
+
+  return $_result
 }
 
 # ── Core: send one message, return response JSON ──────────────────────────────
@@ -382,16 +418,7 @@ _daemon_start() {
   nohup python "$VASHISHTHA_DIR/main.py" >> "$LOG_FILE" 2>&1 &
   echo $! > "$PID_FILE"
 
-  local tries=0
-  printf "${DIM}Starting${RESET}"
-  while ! _check_server && [ $tries -lt 10 ]; do
-    printf "."
-    sleep 0.5
-    tries=$((tries + 1))
-  done
-  echo
-
-  if _check_server; then
+  if _wait_for_server 20 0.5; then
     printf "${GREEN}✓ Vashishtha running (PID $(cat "$PID_FILE"))${RESET}\n"
   else
     printf "${RED}✗ Server didn't respond in time. Check: va logs${RESET}\n"
