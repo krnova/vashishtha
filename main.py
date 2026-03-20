@@ -51,6 +51,7 @@ def detect_capabilities(config: dict) -> dict:
             capture_output=True,
             text=True,
             timeout=5,
+            stdin=subprocess.DEVNULL,
         )
         root_available = result.returncode == 0 and "uid=0" in result.stdout
     except Exception:
