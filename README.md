@@ -169,3 +169,4 @@ projects/      Symlinks to managed projects
 - **Phase 3** — Web UI, browser automation, Dhi integration
 - **Phase 4** — Vector memory, semantic search, SQLite
 - **Phase 5** — Local LLM, Argos Translate offline, native Android app
+- **Phase 6** — Native Windows support (PowerShell CLI, Win32 paths, sandbox alternative to proot)
