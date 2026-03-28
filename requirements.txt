@@ -1,8 +1,11 @@
 # Core
 flask
 python-dotenv
+cruptography
 
 # LLM
+https://github.com/krnova/android-wheels/releases/download/v2.41.5-android/pydantic_core-2.41.5-cp313-cp313-android_arm64_v8a.whl
+https://github.com/krnova/android-wheels/releases/download/v0.13.0-android/jiter-0.13.0-cp313-cp313-android_arm64_v8a.whl
 google-genai>=1.0.0
 openai
 
