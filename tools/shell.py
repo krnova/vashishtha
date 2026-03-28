@@ -5,13 +5,14 @@ Root commands via `su -c` when needed.
 All output captured and returned as string.
 """
 
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
 
 
-DEFAULT_TIMEOUT = 30       # seconds
-ROOT_TIMEOUT = 15          # shorter timeout for root commands — fail fast
+DEFAULT_TIMEOUT = 30   # seconds
+ROOT_TIMEOUT    = 15   # shorter — fail fast for root commands
 
 
 def run(command: str, cwd: str | None = None, timeout: int = DEFAULT_TIMEOUT) -> str:
@@ -22,9 +23,6 @@ def run(command: str, cwd: str | None = None, timeout: int = DEFAULT_TIMEOUT) ->
         command: Shell command string to execute.
         cwd:     Working directory. Defaults to home directory.
         timeout: Max seconds to wait. Kills process if exceeded.
-
-    Returns:
-        String with stdout + stderr, or error message.
     """
     if not command or not command.strip():
         return "Error: empty command"
@@ -41,30 +39,22 @@ def run(command: str, cwd: str | None = None, timeout: int = DEFAULT_TIMEOUT) ->
             cwd=working_dir,
         )
 
-        output_parts = []
-
+        parts = []
         if result.stdout.strip():
-            output_parts.append(result.stdout.strip())
-
+            parts.append(result.stdout.strip())
         if result.stderr.strip():
-            output_parts.append(f"[stderr]: {result.stderr.strip()}")
-
+            parts.append(f"[stderr]: {result.stderr.strip()}")
         if result.returncode != 0:
-            output_parts.append(f"[exit code: {result.returncode}]")
+            parts.append(f"[exit code: {result.returncode}]")
 
-        if not output_parts:
-            return f"[Command completed with exit code {result.returncode}]"
-
-        return "\n".join(output_parts)
+        return "\n".join(parts) if parts else f"[Command completed with exit code {result.returncode}]"
 
     except subprocess.TimeoutExpired:
         return f"Error: command timed out after {timeout}s — '{command}'"
-
     except FileNotFoundError as e:
         return f"Error: command not found — {e}"
-
     except Exception as e:
-        return f"Error: {str(e)}"
+        return f"Error: {e}"
 
 
 def run_root(command: str, cwd: str | None = None) -> str:
@@ -72,14 +62,10 @@ def run_root(command: str, cwd: str | None = None) -> str:
     Execute a command with root via `su -c`.
     Only called after explicit user confirmation via loop.py.
 
-    Args:
-        command: Command to run as root.
-        cwd:     Working directory.
-
-    Returns:
-        Combined stdout + stderr as string.
+    Uses shlex.quote to safely escape the command — prevents injection
+    when the command itself contains double quotes or special shell chars.
     """
-    root_command = f'su -c "{command}"'
+    root_command = f"su -c {shlex.quote(command)}"
     return run(root_command, cwd=cwd, timeout=ROOT_TIMEOUT)
 
 

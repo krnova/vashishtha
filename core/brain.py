@@ -1,6 +1,6 @@
 """
 brain.py — LLM Interface
-Provider-agnostic brain. Supports Gemini and NVIDIA NIM.
+Provider-agnostic brain. Supports Gemini, NVIDIA NIM, and Groq.
 Switch providers via config.json "api.provider" field.
 Nothing else in the codebase knows which LLM is running.
 """
@@ -17,7 +17,7 @@ load_dotenv()
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
-SKILLS_DIR = Path(__file__).parent.parent / "skills"
+SKILLS_DIR  = Path(__file__).parent.parent / "skills"
 CONFIG_PATH = Path(__file__).parent.parent / "config.json"
 
 # ── Skills config ─────────────────────────────────────────────────────────────
@@ -25,7 +25,7 @@ CONFIG_PATH = Path(__file__).parent.parent / "config.json"
 # At ~10KB total, skills are negligible vs context window.
 # Zero false negatives, zero latency overhead, zero classification errors.
 
-_SKILLS_DIR_FILES = ["VASHISHTHA.md", "DEV.md", "DEVICE.md", "TRANSLATE.md", "DESIGN.md"]
+_SKILLS_FILES = ["VASHISHTHA.md", "DEV.md", "DEVICE.md", "TRANSLATE.md", "DESIGN.md"]
 
 # ── Data classes ──────────────────────────────────────────────────────────────
 
@@ -56,9 +56,9 @@ def _load_config() -> dict:
 # ── Skills loader ─────────────────────────────────────────────────────────────
 
 def _load_skills() -> str:
-    """Load all skill files. Simple, no keyword matching, no false negatives."""
+    """Load all skill files. No keyword matching, no false negatives."""
     loaded = []
-    for filename in _SKILLS_DIR_FILES:
+    for filename in _SKILLS_FILES:
         path = SKILLS_DIR / filename
         if path.exists():
             loaded.append(path.read_text())
@@ -91,8 +91,10 @@ When you have enough information or have completed the task, respond with plain 
 - If something failed, say so clearly — never fabricate results
 """
 
-# Minimal system prompt for internal analytical calls
-_RAW_SYSTEM_PROMPT = "You are a precise analytical assistant. Follow instructions exactly and respond only as instructed."
+_RAW_SYSTEM_PROMPT = (
+    "You are a precise analytical assistant. "
+    "Follow instructions exactly and respond only as instructed."
+)
 
 def _build_system_prompt(skills: str, long_term_summary: str = "") -> str:
     parts = [skills]
@@ -107,7 +109,17 @@ def _build_system_prompt(skills: str, long_term_summary: str = "") -> str:
 class GeminiProvider:
     """Google Gemini via google-genai SDK."""
 
-    def __init__(self, model: str, max_tokens: int, temperature: float):
+    # Explicit type map — don't rely on string coercion
+    _TYPE_MAP: dict[str, str] = {
+        "string":  "STRING",
+        "integer": "INTEGER",
+        "number":  "NUMBER",
+        "boolean": "BOOLEAN",
+        "array":   "ARRAY",
+        "object":  "OBJECT",
+    }
+
+    def __init__(self, model: str, max_tokens: int, temperature: float, config: dict | None = None, **kwargs):
         from google import genai
         from google.genai import types as gtypes
 
@@ -120,6 +132,11 @@ class GeminiProvider:
         self.max_tokens = max_tokens
         self.temperature = temperature
         self.gtypes = gtypes
+
+        # Thinking support — placeholder for future Gemini models that support it
+        thinking_cfg = (config or {}).get("thinking", {})
+        self.thinking_enabled = thinking_cfg.get("enabled", False)
+
         print(f"[brain] Provider: Gemini — model: {self.model}")
 
     def call(self, system_prompt: str, messages: list[dict], tool_schemas: list[dict] | None) -> BrainResponse:
@@ -169,8 +186,10 @@ class GeminiProvider:
         for schema in tool_schemas:
             properties = {}
             for param_name, param_info in schema.get("parameters", {}).items():
+                raw_type = param_info.get("type", "string").lower()
+                gemini_type = self._TYPE_MAP.get(raw_type, "STRING")
                 properties[param_name] = gtypes.Schema(
-                    type=param_info.get("type", "string").upper(),
+                    type=gemini_type,
                     description=param_info.get("description", ""),
                 )
             declarations.append(gtypes.FunctionDeclaration(
@@ -189,7 +208,7 @@ class GeminiProvider:
 
         result = []
         for msg in messages:
-            role = msg["role"]
+            role    = msg["role"]
             content = msg["content"]
 
             if role == "assistant":
@@ -207,76 +226,73 @@ class GeminiProvider:
         return result
 
 
-class NIMProvider:
-    """NVIDIA NIM via OpenAI-compatible API."""
+# ── OpenAI-compatible base (NIM + Groq share identical boilerplate) ───────────
 
-    NIM_BASE_URL = "https://integrate.api.nvidia.com/v1"
+class _OpenAICompatibleProvider:
+    """
+    Base for providers with OpenAI-compatible APIs.
+    Subclasses set BASE_URL and ENV_VAR, and may override call() for extra features.
+    """
 
-    def __init__(self, model: str, max_tokens: int, temperature: float, config: dict | None = None):
+    BASE_URL: str = ""
+    ENV_VAR:  str = ""
+
+    def __init__(self, model: str, max_tokens: int, temperature: float, **kwargs):
         from openai import OpenAI
 
-        api_key = os.getenv("NIM_API_KEY")
+        api_key = os.getenv(self.ENV_VAR)
         if not api_key:
-            raise EnvironmentError("NIM_API_KEY not set in .env")
+            raise EnvironmentError(f"{self.ENV_VAR} not set in .env")
 
-        self.client = OpenAI(base_url=self.NIM_BASE_URL, api_key=api_key)
-        self.model = model
-        self.max_tokens = max_tokens
+        self.client      = OpenAI(base_url=self.BASE_URL, api_key=api_key)
+        self.model       = model
+        self.max_tokens  = max_tokens
         self.temperature = temperature
 
-        # Thinking mode — read from config
-        thinking_cfg = (config or {}).get("thinking", {})
-        self.thinking_enabled = thinking_cfg.get("enabled", False)
-        self.thinking_max_tokens = thinking_cfg.get("max_tokens", 1024)
-
-        thinking_status = "ON" if self.thinking_enabled else "OFF"
-        print(f"[brain] Provider: NVIDIA NIM — model: {self.model} | thinking: {thinking_status}")
+        # All providers expose thinking_enabled — api.py checks hasattr, this makes it consistent
+        self.thinking_enabled = False
 
     def call(self, system_prompt: str, messages: list[dict], tool_schemas: list[dict] | None) -> BrainResponse:
         formatted = self._format_messages(system_prompt, messages)
-        tools = self._build_tools(tool_schemas) if tool_schemas else None
+        tools     = self._build_tools(tool_schemas) if tool_schemas else None
+
+        kwargs: dict[str, Any] = dict(
+            model=self.model,
+            messages=formatted,
+            max_tokens=self.max_tokens,
+            temperature=self.temperature,
+        )
+        if tools:
+            kwargs["tools"]       = tools
+            kwargs["tool_choice"] = "auto"
+
+        self._inject_extras(kwargs)
 
         try:
-            kwargs = dict(
-                model=self.model,
-                messages=formatted,
-                max_tokens=self.max_tokens,
-                temperature=self.temperature,
-            )
-            if tools:
-                kwargs["tools"] = tools
-                kwargs["tool_choice"] = "auto"
-
-            # Thinking mode — inject via extra_body if enabled
-            if self.thinking_enabled:
-                kwargs["extra_body"] = {
-                    "nvext": {
-                        "thinking": {"type": "enabled"},
-                        "max_thinking_tokens": self.thinking_max_tokens,
-                    }
-                }
-
             response = self.client.chat.completions.create(**kwargs)
             return self._parse(response)
         except Exception as e:
             return BrainResponse(type="error", error=str(e))
 
+    def _inject_extras(self, kwargs: dict) -> None:
+        """Hook for subclasses to inject provider-specific request params."""
+        pass
+
     def _parse(self, response) -> BrainResponse:
         try:
-            choice = response.choices[0]
+            choice  = response.choices[0]
             message = choice.message
 
-            # Extract thinking content if present
-            thinking = None
+            # Extract thinking — present on NIM + Groq qwen-qwq models
+            thinking: str | None = None
             if hasattr(message, "reasoning_content") and message.reasoning_content:
                 thinking = message.reasoning_content
             elif hasattr(choice, "reasoning_content") and choice.reasoning_content:
                 thinking = choice.reasoning_content
 
             if message.tool_calls:
-                tc = message.tool_calls[0]
-                import json as _json
-                args = _json.loads(tc.function.arguments)
+                tc   = message.tool_calls[0]
+                args = json.loads(tc.function.arguments)
                 return BrainResponse(
                     type="tool_call",
                     tool_call=ToolCall(name=tc.function.name, args=args),
@@ -285,44 +301,49 @@ class NIMProvider:
                 )
 
             if message.content:
-                return BrainResponse(type="text", text=message.content.strip(), thinking=thinking, raw=response)
+                return BrainResponse(
+                    type="text",
+                    text=message.content.strip(),
+                    thinking=thinking,
+                    raw=response,
+                )
 
-            return BrainResponse(type="error", error="Empty response from NIM")
+            return BrainResponse(type="error", error=f"Empty response from {type(self).__name__}")
         except Exception as e:
-            return BrainResponse(type="error", error=f"NIM parse error: {e}")
+            return BrainResponse(type="error", error=f"{type(self).__name__} parse error: {e}")
 
     def _build_tools(self, tool_schemas: list[dict]) -> list[dict]:
         tools = []
         for schema in tool_schemas:
-            properties = {}
+            properties: dict[str, Any] = {}
             required = schema.get("required", [])
             for param_name, param_info in schema.get("parameters", {}).items():
                 properties[param_name] = {
-                    "type": param_info.get("type", "string"),
+                    "type":        param_info.get("type", "string"),
                     "description": param_info.get("description", ""),
                 }
             tools.append({
                 "type": "function",
                 "function": {
-                    "name": schema["name"],
+                    "name":        schema["name"],
                     "description": schema["description"],
                     "parameters": {
-                        "type": "object",
+                        "type":       "object",
                         "properties": properties,
-                        "required": required,
+                        "required":   required,
                     },
                 },
             })
         return tools
 
     def _format_messages(self, system_prompt: str, messages: list[dict]) -> list[dict]:
-        result = [{"role": "system", "content": system_prompt}]
+        result: list[dict] = [{"role": "system", "content": system_prompt}]
         for msg in messages:
-            role = msg["role"]
+            role    = msg["role"]
             content = msg["content"]
             if role == "tool":
                 result.append({
-                    "role": "user",
+                    "role":    "user",
                     "content": f"[Tool result — {msg.get('tool_name', 'unknown')}]: {content}"
                 })
             elif role == "assistant":
@@ -332,11 +353,56 @@ class NIMProvider:
         return result
 
 
+class NIMProvider(_OpenAICompatibleProvider):
+    """NVIDIA NIM via OpenAI-compatible API. Supports thinking via extra_body."""
+
+    BASE_URL = "https://integrate.api.nvidia.com/v1"
+    ENV_VAR  = "NIM_API_KEY"
+
+    def __init__(self, model: str, max_tokens: int, temperature: float, config: dict | None = None, **kwargs):
+        super().__init__(model, max_tokens, temperature)
+
+        thinking_cfg          = (config or {}).get("thinking", {})
+        self.thinking_enabled = thinking_cfg.get("enabled", False)
+        self.thinking_max_tokens = thinking_cfg.get("max_tokens", 1024)
+
+        status = "ON" if self.thinking_enabled else "OFF"
+        print(f"[brain] Provider: NVIDIA NIM — model: {self.model} | thinking: {status}")
+
+    def _inject_extras(self, kwargs: dict) -> None:
+        if self.thinking_enabled:
+            kwargs["extra_body"] = {
+                "nvext": {
+                    "thinking":             {"type": "enabled"},
+                    "max_thinking_tokens":  self.thinking_max_tokens,
+                }
+            }
+
+
+class GroqProvider(_OpenAICompatibleProvider):
+    """
+    Groq via OpenAI-compatible API. Fast inference.
+    Thinking supported on qwen-qwq-32b — returned as reasoning_content,
+    no request-side flag needed (always on for that model).
+    """
+
+    BASE_URL = "https://api.groq.com/openai/v1"
+    ENV_VAR  = "GROQ_API_KEY"
+
+    def __init__(self, model: str, max_tokens: int, temperature: float, config: dict | None = None, **kwargs):
+        super().__init__(model, max_tokens, temperature)
+        # Inherit thinking_enabled from config — used by api.py / va for display gating
+        thinking_cfg          = (config or {}).get("thinking", {})
+        self.thinking_enabled = thinking_cfg.get("enabled", False)
+        print(f"[brain] Provider: Groq — model: {self.model}")
+
+
 # ── Brain ─────────────────────────────────────────────────────────────────────
 
-PROVIDERS = {
+PROVIDERS: dict[str, type] = {
     "gemini": GeminiProvider,
-    "nim": NIMProvider,
+    "nim":    NIMProvider,
+    "groq":   GroqProvider,
 }
 
 class Brain:
@@ -347,27 +413,28 @@ class Brain:
     """
 
     def __init__(self):
-        self.config = _load_config()
-        api_cfg = self.config.get("api", {})
+        self.config  = _load_config()
+        api_cfg      = self.config.get("api", {})
 
-        self.max_tokens = api_cfg.get("max_tokens", 2048)
+        self.max_tokens  = api_cfg.get("max_tokens", 2048)
         self.temperature = api_cfg.get("temperature", 0.7)
 
         provider_name = api_cfg.get("provider", "gemini")
-        models = api_cfg.get("models", {})
-        model = models.get(provider_name, "gemini-2.0-flash")
+        models        = api_cfg.get("models", {})
+        model         = models.get(provider_name, "gemini-2.0-flash")
 
         if provider_name not in PROVIDERS:
-            raise ValueError(f"Unknown provider: '{provider_name}'. Choose from: {list(PROVIDERS.keys())}")
+            raise ValueError(
+                f"Unknown provider: '{provider_name}'. Choose from: {list(PROVIDERS.keys())}"
+            )
 
         self.provider_name = provider_name
-        self.model = model
-        extra = {"config": self.config} if provider_name == "nim" else {}
-        self.provider = PROVIDERS[provider_name](
+        self.model         = model
+        self.provider      = PROVIDERS[provider_name](
             model=model,
             max_tokens=self.max_tokens,
             temperature=self.temperature,
-            **extra,
+            config=self.config,
         )
 
     def call(
@@ -376,23 +443,21 @@ class Brain:
         tool_schemas: list[dict] | None = None,
         memory=None,
     ) -> BrainResponse:
-        skills = _load_skills()
-        long_term = memory.get_long_term_summary() if memory else ""
+        skills       = _load_skills()
+        long_term    = memory.get_long_term_summary() if memory else ""
         system_prompt = _build_system_prompt(skills, long_term)
         return self.provider.call(system_prompt, messages, tool_schemas)
 
     def call_simple(self, prompt: str) -> str:
         """Full pipeline call — loads skills + memory summary. Use for user-facing responses."""
-        result = self.call(
-            messages=[{"role": "user", "content": prompt}],
-        )
+        result = self.call(messages=[{"role": "user", "content": prompt}])
         return result.text if result.type == "text" else f"Error: {result.error}"
 
     def call_raw(self, prompt: str) -> str:
         """
         Minimal internal LLM call — no skills, no memory, no identity context.
         Use for: command analysis, confirmation parsing, any internal reasoning
-        that should not be influenced by agent identity or user context.
+        that must not be influenced by agent identity or user context.
         """
         result = self.provider.call(
             system_prompt=_RAW_SYSTEM_PROMPT,
@@ -401,26 +466,24 @@ class Brain:
         )
         return result.text if result.type == "text" else f"Error: {result.error}"
 
-    def switch_provider(self, provider_name: str):
+    def switch_provider(self, provider_name: str) -> None:
         if provider_name not in PROVIDERS:
             raise ValueError(f"Unknown provider: '{provider_name}'")
 
         models = self.config.get("api", {}).get("models", {})
-        model = models.get(provider_name, "gemini-2.0-flash")
+        model  = models.get(provider_name, "gemini-2.0-flash")
 
         self.provider_name = provider_name
-        self.model = model
-        extra = {"config": self.config} if provider_name == "nim" else {}
-        self.provider = PROVIDERS[provider_name](
+        self.model         = model
+        self.provider      = PROVIDERS[provider_name](
             model=model,
             max_tokens=self.max_tokens,
             temperature=self.temperature,
-            **extra,
+            config=self.config,
         )
-
         print(f"[brain] Switched to: {provider_name} — {model}")
 
-    def switch_model(self, model_name: str):
-        self.model = model_name
+    def switch_model(self, model_name: str) -> None:
+        self.model          = model_name
         self.provider.model = model_name
         print(f"[brain] Model switched to: {model_name}")

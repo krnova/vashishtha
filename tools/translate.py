@@ -3,39 +3,45 @@ tools/translate.py — Translation Tool
 LLM-based translation with language detection.
 Offline engine (Argos Translate) planned — blocked by ARM/Python 3.13 compile issues.
 
-Current mode: LLM fallback via brain.call_simple()
+Current mode: LLM via brain.call_simple()
 Planned mode: Argos Translate (offline, uncensored, 50+ languages)
 """
 
-from pathlib import Path
-import json
-
-# Brain injected at runtime
+# Brain injected at runtime via init()
 _brain = None
 
-def init(brain_instance):
-    """Inject brain for LLM-based translation."""
+def init(brain_instance) -> None:
+    """Inject brain. Called once at startup from api.py."""
     global _brain
     _brain = brain_instance
 
 
-# ── Config ────────────────────────────────────────────────────────────────────
+# ── Config access ─────────────────────────────────────────────────────────────
+# Read config once from the injected brain — no repeated disk reads.
 
-CONFIG_PATH = Path(__file__).parent.parent / "config.json"
+def _get_translation_config() -> dict:
+    """
+    Return the translation config section.
+    Uses brain.config if available (injected at startup).
+    Falls back to config.json if called before init() — should not happen in practice.
+    """
+    if _brain is not None:
+        return _brain.config.get("translation", {})
 
-def _load_translation_config() -> dict:
+    # Fallback for tests / cold import
+    from pathlib import Path
+    import json
+    cfg_path = Path(__file__).parent.parent / "config.json"
     try:
-        if CONFIG_PATH.exists():
-            with open(CONFIG_PATH) as f:
-                return json.load(f).get("translation", {})
+        if cfg_path.exists():
+            return json.loads(cfg_path.read_text()).get("translation", {})
     except Exception:
         pass
     return {}
 
 
-# ── Language detection ────────────────────────────────────────────────────────
+# ── Language normalization ────────────────────────────────────────────────────
 
-# Common language names → ISO codes
 _LANG_ALIASES: dict[str, str] = {
     "hindi": "hi", "हिंदी": "hi",
     "english": "en",
@@ -52,12 +58,20 @@ _LANG_ALIASES: dict[str, str] = {
     "auto": "auto",
 }
 
+_LANG_DISPLAY: dict[str, str] = {
+    "hi": "Hindi", "en": "English", "es": "Spanish",
+    "fr": "French", "de": "German", "zh": "Chinese",
+    "ja": "Japanese", "ar": "Arabic", "ru": "Russian",
+    "pt": "Portuguese", "it": "Italian", "ko": "Korean",
+}
+
 def _normalize_lang(lang: str) -> str:
-    """Normalize language name/alias to code. Returns as-is if already a code."""
     if not lang:
         return "auto"
-    l = lang.lower().strip()
-    return _LANG_ALIASES.get(l, l)
+    return _LANG_ALIASES.get(lang.lower().strip(), lang.lower().strip())
+
+def _lang_display(code: str) -> str:
+    return _LANG_DISPLAY.get(code, code)
 
 
 # ── Translation ───────────────────────────────────────────────────────────────
@@ -72,16 +86,8 @@ def translate(
 
     Args:
         text:      Text to translate.
-        to_lang:   Target language. Name or ISO code (e.g. "hindi", "hi", "french", "fr").
-                   Defaults to user preference from memory, then "hi".
+        to_lang:   Target language (name or ISO code). Defaults to user preference, then "hi".
         from_lang: Source language. "auto" to detect. Default: auto.
-
-    Returns:
-        Translated text, or error string.
-
-    Note:
-        Currently LLM-based. Argos Translate (offline) planned for Phase 5.
-        LLM translation is accurate but requires cloud API call.
     """
     if not text or not text.strip():
         return "Error: empty text"
@@ -89,17 +95,11 @@ def translate(
     if _brain is None:
         return "Error: brain not initialized — call translate.init(brain) at startup"
 
-    cfg = _load_translation_config()
+    cfg = _get_translation_config()
 
-    # Resolve target language
-    if not to_lang:
-        to_lang = cfg.get("default_to", "hi")
-    to_lang = _normalize_lang(to_lang)
-
-    # Resolve source language
+    to_lang   = _normalize_lang(to_lang or cfg.get("default_to", "hi"))
     from_lang = _normalize_lang(from_lang or cfg.get("default_from", "auto"))
 
-    # Build prompt
     if from_lang == "auto":
         lang_instruction = f"Detect the source language and translate the following text to {_lang_display(to_lang)}."
     else:
@@ -116,22 +116,13 @@ def translate(
     )
 
     result = _brain.call_simple(prompt)
-
-    if result.startswith("Error:"):
-        return result
-
-    return result.strip()
+    return result.strip() if not result.startswith("Error:") else result
 
 
 def detect_language(text: str) -> str:
     """
     Detect the language of a given text.
-
-    Args:
-        text: Text to detect language of.
-
-    Returns:
-        Language name and ISO code, e.g. "Hindi (hi)".
+    Returns language name and ISO code, e.g. "Hindi (hi)".
     """
     if not text or not text.strip():
         return "Error: empty text"
@@ -145,12 +136,10 @@ def detect_language(text: str) -> str:
         "Example: Hindi (hi) | English (en) | French (fr)\n\n"
         f"Text: {text[:500]}"
     )
-
     return _brain.call_raw(prompt).strip()
 
 
 def supported_languages() -> str:
-    """List supported languages and current translation mode."""
     lines = [
         "Translation mode: LLM-based (cloud)",
         "Argos Translate (offline): planned — blocked by ARM/Python 3.13 compile issues",
@@ -163,16 +152,3 @@ def supported_languages() -> str:
         "Usage: translate(text, to_lang='hi', from_lang='auto')",
     ]
     return "\n".join(lines)
-
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _lang_display(code: str) -> str:
-    """Return human-readable language name for a code."""
-    _display = {
-        "hi": "Hindi", "en": "English", "es": "Spanish",
-        "fr": "French", "de": "German", "zh": "Chinese",
-        "ja": "Japanese", "ar": "Arabic", "ru": "Russian",
-        "pt": "Portuguese", "it": "Italian", "ko": "Korean",
-    }
-    return _display.get(code, code)

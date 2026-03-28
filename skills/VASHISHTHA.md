@@ -83,10 +83,19 @@ Projects are symlinked into `~/vashishtha/projects/` and tracked in long-term me
 | `sandbox_status()` | Check what languages are available in sandbox |
 | `list_saved_code()` | List previously saved code files |
 
-- Sandbox is isolated — code cannot access host filesystem or API keys
-- Always requires user confirmation before running
-- `save_as` param to persist code in sandbox/saved/
-- Languages: python, javascript/node, java (if installed)
+**Sandbox is an isolated Alpine Linux container (proot-distro):**
+- Host filesystem completely hidden — `--isolated` flag
+- No host API keys, files, or paths visible inside
+- Only `$TMPDIR/vashishtha_sandbox/` bind-mounted at `/sandbox` inside container
+- Languages: python3, node, java (install via apk if missing)
+
+**If a language is missing, install it — no confirmation needed:**
+```
+shell("proot-distro login alpine -- apk add <package>")
+```
+Packages: `python3`, `nodejs`, `openjdk17`
+
+**If `execute_code` fails with binary not found → install the package first, then retry.**
 
 ## Translation
 

@@ -3,7 +3,7 @@ tools/__init__.py — Tool Registry
 Central registry for all tools.
 brain.py gets schemas from here.
 loop.py executes tools through here.
-Adding a new tool = import it + add to TOOLS and SCHEMAS. That's it.
+Adding a new tool = import it + add to TOOLS and _ALL_SCHEMAS. That's it.
 
 Device tools (termux-api) are conditionally excluded from schemas
 if config.json device.termux_api is false — agent won't see them.
@@ -52,13 +52,13 @@ TOOLS: dict = {
     "detect_language":    translate.detect_language,
 }
 
-# ── Device tool names — excluded from schemas if termux_api=false ──────────────
+# ── Device tool names — excluded from schemas if termux_api=false ─────────────
 
-_DEVICE_TOOL_NAMES = {
+_DEVICE_TOOL_NAMES: frozenset[str] = frozenset({
     "battery_status", "get_location", "clipboard_get", "clipboard_set",
     "send_notification", "send_sms", "get_sms", "take_photo",
     "tts_speak", "torch", "get_contacts", "vibrate", "wifi_info",
-}
+})
 
 # ── Tool schemas ──────────────────────────────────────────────────────────────
 
@@ -87,7 +87,7 @@ _ALL_SCHEMAS: list[dict] = [
         "name": "write_file",
         "description": "Write content to a file. Creates the file if it doesn't exist. Overwrites if it does.",
         "parameters": {
-            "path": {"type": "string", "description": "Absolute or relative path to the file."},
+            "path":    {"type": "string", "description": "Absolute or relative path to the file."},
             "content": {"type": "string", "description": "Content to write to the file."},
         },
         "required": ["path", "content"],
@@ -104,7 +104,7 @@ _ALL_SCHEMAS: list[dict] = [
         "name": "search_files",
         "description": "Search for files matching a pattern or containing specific text.",
         "parameters": {
-            "path": {"type": "string", "description": "Directory to search in."},
+            "path":  {"type": "string", "description": "Directory to search in."},
             "query": {"type": "string", "description": "Filename pattern or text to search for."},
         },
         "required": ["path", "query"],
@@ -134,14 +134,14 @@ _ALL_SCHEMAS: list[dict] = [
             "Best for: factual questions, how-to, current events, comparisons, research tasks."
         ),
         "parameters": {
-            "query": {"type": "string", "description": "Research query — be specific."},
+            "query":       {"type": "string",  "description": "Research query — be specific."},
             "max_sources": {"type": "integer", "description": "Number of sources to fetch. Default 4. Max 6."},
         },
         "required": ["query"],
     },
     {
         "name": "search_news",
-        "description": "Search for recent news on a topic. Use when user asks about current events, latest updates, or recent developments.",
+        "description": "Search for recent news on a topic. Use for current events, latest updates.",
         "parameters": {
             "query": {"type": "string", "description": "News search query."}
         },
@@ -149,7 +149,7 @@ _ALL_SCHEMAS: list[dict] = [
     },
     {
         "name": "search_wikipedia",
-        "description": "Search Wikipedia for factual information. Fast and structured. Use for definitions, historical facts, people, places, concepts.",
+        "description": "Search Wikipedia for factual information. Use for definitions, history, people, concepts.",
         "parameters": {
             "query": {"type": "string", "description": "Wikipedia search query."}
         },
@@ -187,7 +187,7 @@ _ALL_SCHEMAS: list[dict] = [
         "name": "send_notification",
         "description": "Push a notification to the Android status bar.",
         "parameters": {
-            "title": {"type": "string", "description": "Notification title."},
+            "title":   {"type": "string", "description": "Notification title."},
             "content": {"type": "string", "description": "Notification body text."},
         },
         "required": ["title", "content"],
@@ -196,7 +196,7 @@ _ALL_SCHEMAS: list[dict] = [
         "name": "send_sms",
         "description": "Send an SMS message. ALWAYS requires user confirmation before sending.",
         "parameters": {
-            "number": {"type": "string", "description": "Phone number to send to."},
+            "number":  {"type": "string", "description": "Phone number to send to."},
             "message": {"type": "string", "description": "SMS message content."},
         },
         "required": ["number", "message"],
@@ -206,7 +206,7 @@ _ALL_SCHEMAS: list[dict] = [
         "description": "Read SMS messages from inbox or sent box.",
         "parameters": {
             "limit": {"type": "integer", "description": "Number of messages to retrieve. Default: 10."},
-            "box": {"type": "string", "description": "inbox, sent, draft, all. Default: inbox."},
+            "box":   {"type": "string",  "description": "inbox, sent, draft, all. Default: inbox."},
         },
         "required": [],
     },
@@ -214,8 +214,8 @@ _ALL_SCHEMAS: list[dict] = [
         "name": "take_photo",
         "description": "Take a photo using the device camera.",
         "parameters": {
-            "camera": {"type": "integer", "description": "0 = back camera, 1 = front camera. Default: 0."},
-            "output_path": {"type": "string", "description": "Path to save photo. Optional."},
+            "camera":      {"type": "integer", "description": "0 = back camera, 1 = front camera. Default: 0."},
+            "output_path": {"type": "string",  "description": "Path to save photo. Optional."},
         },
         "required": [],
     },
@@ -273,7 +273,7 @@ _ALL_SCHEMAS: list[dict] = [
                     "Never stringify unnecessarily."
                 )
             },
-            "category": {"type": "string", "description": "user | fact | preference | project | context. Default: fact"},
+            "category":   {"type": "string",  "description": "user | fact | preference | project | context. Default: fact"},
             "importance": {"type": "integer", "description": "1=normal, 2=important, 3=critical. Default: 1"},
         },
         "required": ["key", "value"],
@@ -288,7 +288,7 @@ _ALL_SCHEMAS: list[dict] = [
     },
     {
         "name": "search_memory",
-        "description": "Search long-term memory by keyword. Searches both keys and values. Use before answering personal questions.",
+        "description": "Search long-term memory by keyword. Searches both keys and values.",
         "parameters": {
             "query": {"type": "string", "description": "Search term."}
         },
@@ -313,7 +313,7 @@ _ALL_SCHEMAS: list[dict] = [
     {
         "name": "execute_code",
         "description": (
-            "Execute code in an isolated proot sandbox. "
+            "Execute code in an isolated proot-distro sandbox (Alpine Linux). "
             "ALWAYS use this for running code — NEVER use write_file + shell for code execution. "
             "Code runs with empty environment — no API keys or host paths visible. "
             "Always requires user confirmation before running. "
@@ -322,14 +322,14 @@ _ALL_SCHEMAS: list[dict] = [
         ),
         "parameters": {
             "language": {"type": "string", "description": "Language: python, javascript, node, java."},
-            "code": {"type": "string", "description": "Complete, self-contained source code. No stdin — do not use input()."},
-            "save_as": {"type": "string", "description": "Optional filename to persist in sandbox/saved/. Omit to auto-delete after run."},
+            "code":     {"type": "string", "description": "Complete, self-contained source code. No stdin — do not use input()."},
+            "save_as":  {"type": "string", "description": "Optional filename to persist in sandbox/saved/. Omit to auto-delete after run."},
         },
         "required": ["language", "code"],
     },
     {
         "name": "sandbox_status",
-        "description": "Check sandbox state — available languages, linked binaries, isolation mode. Use before execute_code if unsure.",
+        "description": "Check sandbox state — available languages, isolation mode, timeout. Use before execute_code if unsure.",
         "parameters": {},
         "required": [],
     },
@@ -342,14 +342,13 @@ _ALL_SCHEMAS: list[dict] = [
     {
         "name": "translate",
         "description": (
-            "Translate text to a target language. "
-            "LLM-based — accurate for all major languages. "
+            "Translate text to a target language. LLM-based — accurate for all major languages. "
             "Checks user's translation_preferences from memory first. "
             "Use for: translating user content, multilingual tasks, language conversion."
         ),
         "parameters": {
-            "text": {"type": "string", "description": "Text to translate."},
-            "to_lang": {"type": "string", "description": "Target language — name or ISO code. e.g. 'hindi', 'hi', 'french', 'fr'. Leave empty to use user preference (default: hi)."},
+            "text":      {"type": "string", "description": "Text to translate."},
+            "to_lang":   {"type": "string", "description": "Target language — name or ISO code. e.g. 'hindi', 'hi', 'french', 'fr'. Leave empty to use user preference (default: hi)."},
             "from_lang": {"type": "string", "description": "Source language. Default: auto-detect."},
         },
         "required": ["text"],
@@ -363,6 +362,18 @@ _ALL_SCHEMAS: list[dict] = [
         "required": ["text"],
     },
 ]
+
+
+# ── Schema cache ──────────────────────────────────────────────────────────────
+# termux_api is set once at startup — safe to cache for the process lifetime.
+
+_schemas_cache: list[dict] | None = None
+
+
+def invalidate_schemas_cache() -> None:
+    """Force get_schemas() to re-read config on next call. Call after config changes."""
+    global _schemas_cache
+    _schemas_cache = None
 
 
 # ── Public interface ──────────────────────────────────────────────────────────
@@ -383,17 +394,23 @@ def get_schemas() -> list[dict]:
     """
     Return tool schemas for brain.py to send to the LLM.
     Device tools excluded if config.json device.termux_api is false.
+    Result cached for process lifetime — termux_api doesn't change mid-session.
     """
+    global _schemas_cache
+    if _schemas_cache is not None:
+        return _schemas_cache
+
     termux_api = True
     try:
         cfg_path = Path(__file__).parent.parent / "config.json"
         if cfg_path.exists():
-            cfg = json.loads(cfg_path.read_text())
+            cfg        = json.loads(cfg_path.read_text())
             termux_api = cfg.get("device", {}).get("termux_api", True)
     except Exception:
         pass
 
-    if termux_api:
-        return _ALL_SCHEMAS
-
-    return [s for s in _ALL_SCHEMAS if s["name"] not in _DEVICE_TOOL_NAMES]
+    _schemas_cache = (
+        _ALL_SCHEMAS if termux_api
+        else [s for s in _ALL_SCHEMAS if s["name"] not in _DEVICE_TOOL_NAMES]
+    )
+    return _schemas_cache

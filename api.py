@@ -11,7 +11,7 @@ from core.brain import Brain
 from core.memory import Memory
 from core.context import Context
 from core.loop import Loop
-from tools import memory_tool, web, translate
+from tools import memory_tool, web, translate, code_runner
 
 load_dotenv()
 
@@ -23,11 +23,30 @@ brain = Brain()
 memory = Memory(
     memory_window=brain.config.get("agent", {}).get("memory_window", 20)
 )
+
+# Inject dependencies — all modules that need brain/memory/config get them once here
 memory_tool.init(memory)
 web.init(brain)
 translate.init(brain)
+code_runner.init(brain.config)   # passes sandbox.distro + sandbox.timeout
 
 sessions: dict[str, dict] = {}
+
+
+# ── Global error handler — always return JSON, never HTML ─────────────────────
+
+@app.errorhandler(Exception)
+def handle_unhandled_exception(e: Exception):
+    app.logger.exception("Unhandled exception")
+    return jsonify({"error": str(e), "status": "error"}), 500
+
+@app.errorhandler(404)
+def handle_404(e):
+    return jsonify({"error": "endpoint not found", "status": "error"}), 404
+
+@app.errorhandler(405)
+def handle_405(e):
+    return jsonify({"error": "method not allowed", "status": "error"}), 405
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -35,21 +54,19 @@ sessions: dict[str, dict] = {}
 def _get_or_create_session(session_id: str | None) -> tuple[str, Context, Loop]:
     """Get existing session or create a new one. Loads from disk if needed."""
     if session_id and session_id in sessions:
-        ctx = sessions[session_id]["context"]
+        ctx  = sessions[session_id]["context"]
         loop = sessions[session_id]["loop"]
         return session_id, ctx, loop
 
-    # Try loading from disk — handles fresh process restarts
     if session_id and memory.load_session(session_id):
-        ctx = Context(session_id=session_id)
+        ctx  = Context(session_id=session_id)
         loop = Loop(brain=brain, memory=memory, context=ctx)
         sessions[session_id] = {"context": ctx, "loop": loop}
         print(f"[api] Restored session from disk: {session_id}")
         return session_id, ctx, loop
 
-    # New session
-    sid = memory.new_session()
-    ctx = Context(session_id=sid)
+    sid  = memory.new_session()
+    ctx  = Context(session_id=sid)
     loop = Loop(brain=brain, memory=memory, context=ctx)
     sessions[sid] = {"context": ctx, "loop": loop}
     return sid, ctx, loop
@@ -58,17 +75,17 @@ def _get_or_create_session(session_id: str | None) -> tuple[str, Context, Loop]:
 def _parse_confirmation(message: str) -> bool | None:
     """
     Use LLM to determine if user is confirming or denying.
-    Uses call_raw — no identity/skill context needed for this.
+    Uses call_raw — no identity/skill context needed.
     Returns True (yes), False (no), or None (unclear).
     """
-    prompt = f"""The user was asked to confirm or deny an action.
-Their response was: "{message}"
-
-Reply with exactly one word: YES or NO or UNCLEAR.
-- YES if they are agreeing, confirming, or proceeding
-- NO if they are refusing, cancelling, or saying no
-- UNCLEAR if it cannot be determined"""
-
+    prompt = (
+        f"The user was asked to confirm or deny an action.\n"
+        f"Their response was: \"{message}\"\n\n"
+        "Reply with exactly one word: YES or NO or UNCLEAR.\n"
+        "- YES if they are agreeing, confirming, or proceeding\n"
+        "- NO if they are refusing, cancelling, or saying no\n"
+        "- UNCLEAR if it cannot be determined"
+    )
     result = brain.call_raw(prompt).strip().upper()
     if result.startswith("YES"):
         return True
@@ -82,9 +99,9 @@ Reply with exactly one word: YES or NO or UNCLEAR.
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({
-        "status": "ok",
-        "agent": "vashishtha",
-        "model": brain.model,
+        "status":          "ok",
+        "agent":           "vashishtha",
+        "model":           brain.model,
         "active_sessions": len(sessions),
     })
 
@@ -93,15 +110,15 @@ def health():
 def chat():
     data = request.get_json(silent=True)
     if not data:
-        return jsonify({"error": "Invalid JSON body"}), 400
+        return jsonify({"error": "Invalid JSON body", "status": "error"}), 400
 
-    message = data.get("message", "").strip()
-    session_id = data.get("session_id")
-    confirming = data.get("confirming", False)
+    message        = data.get("message", "").strip()
+    session_id     = data.get("session_id")
+    confirming     = data.get("confirming", False)
     force_thinking = data.get("thinking", False)
 
     if not message:
-        return jsonify({"error": "message is required"}), 400
+        return jsonify({"error": "message is required", "status": "error"}), 400
 
     # Per-request thinking override — wrapped in try/finally so it always restores
     _prev_thinking = None
@@ -115,40 +132,43 @@ def chat():
         # ── Confirmation flow ─────────────────────────────────────────────────
         if confirming and ctx.has_pending():
             confirmed = _parse_confirmation(message)
+
             if confirmed is True:
                 result = loop.run_confirmed(ctx.pending_action)
                 ctx.clear_pending()
+
             elif confirmed is False:
                 ctx.clear_pending()
                 memory.add_message(sid, "user", message)
                 memory.add_message(sid, "assistant", "Action cancelled.")
                 return jsonify({
-                    "reply": "Action cancelled.",
-                    "session_id": sid,
-                    "status": "done",
-                    "actions": [],
-                    "thinking": None,
+                    "reply":                "Action cancelled.",
+                    "session_id":           sid,
+                    "status":               "done",
+                    "actions":              [],
+                    "thinking":             None,
                     "confirmation_required": False,
                     "confirmation_question": None,
-                    "pending_action": None,
+                    "pending_action":        None,
                 })
+
             else:
-                # Unclear — ask again
+                # Unclear — ask again, preserve pending
                 return jsonify({
-                    "reply": "I couldn't tell if that was a yes or no. Please confirm: yes or no?",
-                    "session_id": sid,
-                    "status": "confirm",
-                    "actions": [],
-                    "thinking": None,
+                    "reply":                "I couldn't tell if that was a yes or no. Please confirm: yes or no?",
+                    "session_id":           sid,
+                    "status":               "confirm",
+                    "actions":              [],
+                    "thinking":             None,
                     "confirmation_required": True,
                     "confirmation_question": ctx.pending_action,
-                    "pending_action": ctx.pending_action,
+                    "pending_action":        ctx.pending_action,
                 })
+
         else:
             result = loop.run(message)
 
     finally:
-        # Always restore thinking state — even if something throws
         if _prev_thinking is not None:
             brain.provider.thinking_enabled = _prev_thinking
 
@@ -156,26 +176,26 @@ def chat():
     if result.status == "confirm":
         ctx.set_pending(result.pending_action)
         return jsonify({
-            "reply": result.response,
-            "session_id": sid,
-            "status": "confirm",
-            "actions": result.actions,
-            "thinking": result.thinking,
+            "reply":                result.response,
+            "session_id":           sid,
+            "status":               "confirm",
+            "actions":              result.actions,
+            "thinking":             result.thinking,
             "confirmation_required": True,
             "confirmation_question": result.confirm_question,
-            "pending_action": result.pending_action,
+            "pending_action":        result.pending_action,
         })
 
     # ── Done / error / limit ──────────────────────────────────────────────────
     return jsonify({
-        "reply": result.response,
-        "session_id": sid,
-        "status": result.status,
-        "actions": result.actions,
-        "thinking": result.thinking,   # top-level thinking from final response
+        "reply":                result.response,
+        "session_id":           sid,
+        "status":               result.status,
+        "actions":              result.actions,
+        "thinking":             result.thinking,
         "confirmation_required": False,
         "confirmation_question": None,
-        "pending_action": None,
+        "pending_action":        None,
     })
 
 
@@ -185,7 +205,7 @@ def delete_session(session_id: str):
         del sessions[session_id]
         memory.clear_session(session_id)
         return jsonify({"status": "cleared", "session_id": session_id})
-    return jsonify({"error": "session not found"}), 404
+    return jsonify({"error": "session not found", "status": "error"}), 404
 
 
 @app.route("/memory/long-term", methods=["GET"])
@@ -197,7 +217,7 @@ def get_long_term():
 def update_long_term():
     data = request.get_json(silent=True)
     if not data or "key" not in data or "value" not in data:
-        return jsonify({"error": "key and value required"}), 400
+        return jsonify({"error": "key and value required", "status": "error"}), 400
     memory.update_long_term(data["key"], data["value"])
     return jsonify({"status": "updated", "key": data["key"]})
 
@@ -212,6 +232,6 @@ def get_config():
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
-def start(host: str = "127.0.0.1", port: int = 5000, debug: bool = False):
+def start(host: str = "127.0.0.1", port: int = 5000, debug: bool = False) -> None:
     print(f"[api] Vashishtha API starting on http://{host}:{port}")
     app.run(host=host, port=port, debug=debug, use_reloader=False)

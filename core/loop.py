@@ -25,7 +25,7 @@ class LoopStep:
     tool_result: str | None = None
     text: str | None = None
     error: str | None = None
-    thinking: str | None = None      # reasoning trace from thinking models
+    thinking: str | None = None
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
 
@@ -40,7 +40,8 @@ class LoopResult:
     pending_args: dict | None = None
     iterations_used: int = 0
 
-    # api.py compatibility aliases
+    # ── api.py compatibility aliases ─────────────────────────────────────────
+
     @property
     def status(self) -> str:
         if self.confirmation_required:
@@ -52,9 +53,9 @@ class LoopResult:
         result = []
         for s in self.steps:
             if s.type == "tool_call":
-                action = {
-                    "tool": s.tool_name,
-                    "args": s.tool_args,
+                action: dict[str, Any] = {
+                    "tool":   s.tool_name,
+                    "args":   s.tool_args,
                     "result": s.tool_result,
                 }
                 if s.thinking:
@@ -64,7 +65,7 @@ class LoopResult:
 
     @property
     def thinking(self) -> str | None:
-        """Thinking from the final step — what va and api.py surface as top-level thinking."""
+        """Thinking from the final step — surfaced by va and api.py."""
         for s in reversed(self.steps):
             if s.thinking:
                 return s.thinking
@@ -72,17 +73,11 @@ class LoopResult:
 
     @property
     def thinking_trace(self) -> list[dict]:
-        """All thinking blocks across all steps — text, tool, error."""
-        trace = []
-        for s in self.steps:
-            if s.thinking:
-                trace.append({
-                    "iteration": s.iteration,
-                    "type": s.type,
-                    "tool": s.tool_name,
-                    "thinking": s.thinking,
-                })
-        return trace
+        """All thinking blocks across all steps."""
+        return [
+            {"iteration": s.iteration, "type": s.type, "tool": s.tool_name, "thinking": s.thinking}
+            for s in self.steps if s.thinking
+        ]
 
     @property
     def confirm_question(self) -> str | None:
@@ -97,10 +92,8 @@ class LoopResult:
 
 # ── Confirmation rules ────────────────────────────────────────────────────────
 
-# Tools that always require confirmation, no analysis needed
 ALWAYS_CONFIRM_TOOLS = {"send_sms", "execute_code"}
 
-# Instantly destructive shell patterns — no LLM analysis needed, always confirm
 INSTANTLY_DESTRUCTIVE = [
     "rm ", "rm -", "rmdir", "mkfs", "dd ",
     "> /", "chmod", "chown", "kill ",
@@ -108,12 +101,14 @@ INSTANTLY_DESTRUCTIVE = [
     "truncate", "shred", "mv /",
 ]
 
+_BLOCKED_SENTINEL = "__BLOCKED__"
 
-def _analyse_command(cmd: str, brain) -> tuple[bool, str]:
+
+def _analyse_command(cmd: str, brain: Brain) -> tuple[bool, str]:
     """
-    Ask LLM to reason about a command before deciding on confirmation.
-    Returns (needs_confirmation: bool, reasoning: str).
-    Internal — reasoning never shown to user directly, used to build prompt.
+    Ask LLM to reason about a shell command's risk.
+    Returns (needs_confirmation, reasoning).
+    Uses call_raw — identity/skills must not influence security decisions.
     """
     response = brain.call_raw(
         "You are a security-conscious system analyst. Analyze this shell command "
@@ -131,17 +126,22 @@ def _analyse_command(cmd: str, brain) -> tuple[bool, str]:
         "YES = user must confirm before this runs\n"
         "NO = safe to execute without confirmation"
     )
-
-    upper = response.upper()
-    needs_conf = "VERDICT: YES" in upper
+    upper     = response.upper()
+    needs     = "VERDICT: YES" in upper
     reasoning = response.split("VERDICT:")[0].strip() if "VERDICT:" in upper else response.strip()
-    return needs_conf, reasoning
+    return needs, reasoning
 
 
-def _needs_confirmation(tool_name: str, tool_args: dict, brain=None) -> tuple[bool, str]:
+def _needs_confirmation(
+    tool_name: str,
+    tool_args: dict,
+    brain: Brain | None = None,
+    config: dict | None = None,
+) -> tuple[bool, str]:
     """
-    Returns (needs_confirmation: bool, reason: str).
-    reason is used to build a better confirmation prompt for the user.
+    Returns (needs_confirmation, reason).
+    Reason builds the confirmation prompt shown to the user.
+    Returns (False, _BLOCKED_SENTINEL) when a root command should be hard-blocked.
     """
     if tool_name in ALWAYS_CONFIRM_TOOLS:
         return True, "This tool always requires confirmation."
@@ -154,12 +154,23 @@ def _needs_confirmation(tool_name: str, tool_args: dict, brain=None) -> tuple[bo
             if kw in cmd:
                 return True, f"Command contains destructive operation: `{kw.strip()}`"
 
-        # Root command — reason through it
+        # Root command
         if cmd.startswith("su ") or "su -c" in cmd:
+            device_cfg = (config or {}).get("device", {})
+
+            # Hard block if root unavailable
+            if not device_cfg.get("root_available", True):
+                return False, _BLOCKED_SENTINEL
+
+            # root_confirm_always=True → skip LLM analysis, always confirm
+            if device_cfg.get("root_confirm_always", True):
+                return True, "Root command — confirmation always required (root_confirm_always=true)."
+
+            # root_confirm_always=False → use LLM to assess risk
             if brain is None:
-                return True, "Root command — no analysis available, confirming to be safe."
-            needs_conf, reasoning = _analyse_command(cmd, brain)
-            return needs_conf, reasoning
+                return True, "Root command — no LLM analysis available, confirming to be safe."
+            needs, reasoning = _analyse_command(cmd, brain)
+            return needs, reasoning
 
     if tool_name == "write_file":
         return True, "Writing to a file will overwrite existing content."
@@ -168,7 +179,7 @@ def _needs_confirmation(tool_name: str, tool_args: dict, brain=None) -> tuple[bo
 
 
 def _confirmation_question(tool_name: str, tool_args: dict, reason: str = "") -> str:
-    """Build a clear confirmation prompt, including analysis reasoning when available."""
+    """Build a clear confirmation prompt for the user."""
     context = f"\n\n*Why:* {reason}" if reason else ""
 
     if tool_name == "shell":
@@ -181,13 +192,13 @@ def _confirmation_question(tool_name: str, tool_args: dict, reason: str = "") ->
 
     if tool_name == "send_sms":
         number = tool_args.get("number", "unknown")
-        msg = tool_args.get("message", "")
+        msg    = tool_args.get("message", "")
         return f"About to send SMS to {number}:\n\"{msg}\"{context}\n\nProceed? (yes/no)"
 
     if tool_name == "execute_code":
-        lang = tool_args.get("language", "unknown")
-        code = tool_args.get("code", "")
-        save = tool_args.get("save_as")
+        lang    = tool_args.get("language", "unknown")
+        code    = tool_args.get("code", "")
+        save    = tool_args.get("save_as")
         preview = code[:300] + ("..." if len(code) > 300 else "")
         save_note = f"\nWill be saved as: `{save}`" if save else "\nFile will be deleted after run."
         return (
@@ -205,38 +216,84 @@ def _confirmation_question(tool_name: str, tool_args: dict, reason: str = "") ->
 class Loop:
     """
     Agentic loop. One instance per session.
-    Drives brain → tool → observe cycle until goal is met.
+    Drives brain → tool → observe cycle until goal is met or confirmation needed.
     """
 
+    _MAX_REPEATS = 3
+
     def __init__(self, brain: Brain, memory, context, max_iterations: int = 20):
-        self.brain = brain
-        self.memory = memory
-        self.context = context
-        self.max_iterations = brain.config.get("agent", {}).get("max_loop_iterations", max_iterations)
+        self.brain    = brain
+        self.memory   = memory
+        self.context  = context
+        self.config   = brain.config   # single reference, not re-read per call
+        self.max_iterations = self.config.get("agent", {}).get("max_loop_iterations", max_iterations)
+
+    # ── Public API ────────────────────────────────────────────────────────────
 
     def run(self, user_message: str) -> LoopResult:
-        """Run the agentic loop for a user message."""
-
+        """Run the agentic loop for a new user message."""
         self.memory.add_message(
             session_id=self.context.session_id,
             role="user",
             content=user_message,
         )
-
-        steps: list[LoopStep] = []
-        available_tools = get_schemas()
-        last_tool_call: str | None = None  # repetition guard
-        repeat_count: int = 0
-        MAX_REPEATS = 3
-
         print(f"[loop] Starting — session: {self.context.session_id}")
+        return self._run_loop()
+
+    def run_confirmed(self, pending_action: dict) -> LoopResult:
+        """
+        Execute a confirmed pending action then re-enter the loop.
+        This ensures follow-up tool calls (e.g. write → commit → push) are not dropped.
+        """
+        tool_name = pending_action["tool"]
+        tool_args = pending_action.get("args", {})
+
+        print(f"[loop] Executing confirmed: {tool_name}({json.dumps(tool_args)[:80]})")
+
+        start = time.time()
+        try:
+            tool_result = str(tool_execute(tool_name, tool_args))
+        except Exception as e:
+            tool_result = f"Tool error: {e}"
+        elapsed = int((time.time() - start) * 1000)
+        print(f"[loop] ✓ confirmed {tool_name} — {elapsed}ms")
+
+        # Feed result into memory so the loop sees it on first iteration
+        self.memory.add_message(
+            session_id=self.context.session_id,
+            role="tool",
+            content=tool_result,
+            tool_name=tool_name,
+        )
+
+        # Pre-seed steps with the confirmed action so actions[] is complete
+        seed_step = LoopStep(
+            iteration=0,
+            type="tool_call",
+            tool_name=tool_name,
+            tool_args=tool_args,
+            tool_result=tool_result,
+        )
+        return self._run_loop(initial_steps=[seed_step])
+
+    # ── Core loop ─────────────────────────────────────────────────────────────
+
+    def _run_loop(self, initial_steps: list[LoopStep] | None = None) -> LoopResult:
+        """
+        The agentic loop body.
+        Called by both run() (no initial steps) and run_confirmed() (one seed step).
+        """
+        steps: list[LoopStep]  = list(initial_steps) if initial_steps else []
+        available_tools        = get_schemas()
+        last_call_sig: str | None = None
+        repeat_count: int      = 0
+
         print(f"[loop] Tools: {[t['name'] for t in available_tools]}")
 
         for i in range(1, self.max_iterations + 1):
             print(f"[loop] Iteration {i}/{self.max_iterations}")
 
-            history = self.memory.get_history(self.context.session_id)
-
+            history: list[dict] = self.memory.get_history(self.context.session_id)
             response: BrainResponse = self.brain.call(
                 messages=history,
                 tool_schemas=available_tools,
@@ -245,22 +302,14 @@ class Loop:
 
             # ── Error ─────────────────────────────────────────────────────────
             if response.type == "error":
-                steps.append(LoopStep(
-                    iteration=i, type="error",
-                    error=response.error,
-                    thinking=response.thinking,
-                ))
-                error_msg = f"Something went wrong: {response.error}"
-                self.memory.add_message(self.context.session_id, "assistant", error_msg)
-                return LoopResult(success=False, response=error_msg, steps=steps, iterations_used=i)
+                steps.append(LoopStep(iteration=i, type="error", error=response.error, thinking=response.thinking))
+                msg = f"Something went wrong: {response.error}"
+                self.memory.add_message(self.context.session_id, "assistant", msg)
+                return LoopResult(success=False, response=msg, steps=steps, iterations_used=i)
 
             # ── Text — done ───────────────────────────────────────────────────
             if response.type == "text":
-                steps.append(LoopStep(
-                    iteration=i, type="text",
-                    text=response.text,
-                    thinking=response.thinking,
-                ))
+                steps.append(LoopStep(iteration=i, type="text", text=response.text, thinking=response.thinking))
                 self.memory.add_message(self.context.session_id, "assistant", response.text)
                 print(f"[loop] Done after {i} iteration(s)")
                 return LoopResult(success=True, response=response.text, steps=steps, iterations_used=i)
@@ -270,32 +319,34 @@ class Loop:
                 tool_name = response.tool_call.name
                 tool_args = response.tool_call.args
 
-                # Repetition guard — same tool+args repeated too many times
+                # Repetition guard
                 call_sig = f"{tool_name}:{json.dumps(tool_args, sort_keys=True)}"
-                if call_sig == last_tool_call:
+                if call_sig == last_call_sig:
                     repeat_count += 1
-                    if repeat_count >= MAX_REPEATS:
-                        stuck_msg = f"Stuck in loop — same tool `{tool_name}` called {repeat_count} times with same args. Stopping."
-                        print(f"[loop] ⚠ {stuck_msg}")
-                        self.memory.add_message(self.context.session_id, "assistant", stuck_msg)
-                        return LoopResult(success=False, response=stuck_msg, steps=steps, iterations_used=i)
+                    if repeat_count >= self._MAX_REPEATS:
+                        msg = (
+                            f"Stuck in loop — `{tool_name}` called {repeat_count} times "
+                            f"with identical args. Stopping."
+                        )
+                        print(f"[loop] ⚠ {msg}")
+                        self.memory.add_message(self.context.session_id, "assistant", msg)
+                        return LoopResult(success=False, response=msg, steps=steps, iterations_used=i)
                 else:
-                    last_tool_call = call_sig
-                    repeat_count = 0
+                    last_call_sig = call_sig
+                    repeat_count  = 0
 
                 print(f"[loop] Tool call: {tool_name}({json.dumps(tool_args)[:100]})")
 
-                # ── Block root commands if root not available ──────────────────
+                # ── Root command — check availability first ────────────────────
                 if tool_name == "shell":
                     cmd = tool_args.get("command", "").strip()
                     if cmd.startswith("su ") or "su -c" in cmd:
-                        root_cfg = self.brain.config.get("device", {}).get("root_available", True)
-                        if not root_cfg:
+                        if not self.config.get("device", {}).get("root_available", True):
                             tool_result = (
                                 "Error: root access not available on this device "
                                 "(root_available=false in config.json). Cannot run su commands."
                             )
-                            print(f"[loop] ✗ root blocked — {tool_result[:60]}")
+                            print(f"[loop] ✗ root blocked")
                             steps.append(LoopStep(
                                 iteration=i, type="tool_call",
                                 tool_name=tool_name, tool_args=tool_args,
@@ -308,7 +359,26 @@ class Loop:
                             )
                             continue
 
-                needs_conf, reason = _needs_confirmation(tool_name, tool_args, self.brain)
+                # ── Confirmation check ─────────────────────────────────────────
+                needs_conf, reason = _needs_confirmation(
+                    tool_name, tool_args, self.brain, self.config
+                )
+
+                if reason == _BLOCKED_SENTINEL:
+                    # Should have been caught by root_available check above,
+                    # but guard here as fallback
+                    tool_result = "Error: root command blocked (root_available=false)."
+                    steps.append(LoopStep(
+                        iteration=i, type="tool_call",
+                        tool_name=tool_name, tool_args=tool_args,
+                        tool_result=tool_result, thinking=response.thinking,
+                    ))
+                    self.memory.add_message(
+                        session_id=self.context.session_id,
+                        role="tool", content=tool_result, tool_name=tool_name,
+                    )
+                    continue
+
                 if needs_conf:
                     question = _confirmation_question(tool_name, tool_args, reason)
                     steps.append(LoopStep(
@@ -316,7 +386,7 @@ class Loop:
                         tool_name=tool_name, tool_args=tool_args,
                         thinking=response.thinking,
                     ))
-                    print(f"[loop] Confirmation required")
+                    print(f"[loop] Confirmation required for {tool_name}")
                     return LoopResult(
                         success=True,
                         response=question,
@@ -328,74 +398,27 @@ class Loop:
                         iterations_used=i,
                     )
 
-                # Execute tool
+                # ── Execute tool ───────────────────────────────────────────────
                 start = time.time()
                 try:
                     tool_result = str(tool_execute(tool_name, tool_args))
                 except Exception as e:
                     tool_result = f"Tool error: {e}"
                 elapsed = int((time.time() - start) * 1000)
-
                 print(f"[loop] ✓ {tool_name} — {elapsed}ms — {tool_result[:80]}")
 
                 steps.append(LoopStep(
                     iteration=i, type="tool_call",
-                    tool_name=tool_name, tool_args=tool_args, tool_result=tool_result,
-                    thinking=response.thinking,
+                    tool_name=tool_name, tool_args=tool_args,
+                    tool_result=tool_result, thinking=response.thinking,
                 ))
-
-                # Feed result back to memory so brain sees it next iteration
                 self.memory.add_message(
                     session_id=self.context.session_id,
-                    role="tool",
-                    content=tool_result,
-                    tool_name=tool_name,
+                    role="tool", content=tool_result, tool_name=tool_name,
                 )
                 continue
 
         # ── Iteration limit ───────────────────────────────────────────────────
-        limit_msg = (
-            f"Reached iteration limit ({self.max_iterations}). "
-            f"Completed {len(steps)} step(s)."
-        )
-        self.memory.add_message(self.context.session_id, "assistant", limit_msg)
-        return LoopResult(success=False, response=limit_msg, steps=steps, iterations_used=self.max_iterations)
-
-    def run_confirmed(self, pending_action: dict) -> LoopResult:
-        """Execute a confirmed pending action."""
-        tool_name = pending_action["tool"]
-        tool_args = pending_action.get("args", {})
-
-        print(f"[loop] Executing confirmed: {tool_name}({tool_args})")
-
-        start = time.time()
-        try:
-            tool_result = str(tool_execute(tool_name, tool_args))
-        except Exception as e:
-            tool_result = f"Tool error: {e}"
-        elapsed = int((time.time() - start) * 1000)
-
-        print(f"[loop] ✓ confirmed {tool_name} — {elapsed}ms")
-
-        self.memory.add_message(
-            session_id=self.context.session_id,
-            role="tool",
-            content=tool_result,
-            tool_name=tool_name,
-        )
-
-        history = self.memory.get_history(self.context.session_id)
-        response = self.brain.call(
-            messages=history,
-            memory=self.memory,
-        )
-
-        final_text = response.text if response.type == "text" else tool_result
-        self.memory.add_message(self.context.session_id, "assistant", final_text)
-
-        step = LoopStep(
-            iteration=1, type="tool_call",
-            tool_name=tool_name, tool_args=tool_args, tool_result=tool_result,
-            thinking=response.thinking,
-        )
-        return LoopResult(success=True, response=final_text, steps=[step], iterations_used=1)
+        msg = f"Reached iteration limit ({self.max_iterations}). Completed {len(steps)} step(s)."
+        self.memory.add_message(self.context.session_id, "assistant", msg)
+        return LoopResult(success=False, response=msg, steps=steps, iterations_used=self.max_iterations)

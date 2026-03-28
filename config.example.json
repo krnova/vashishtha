@@ -3,7 +3,8 @@
     "provider": "nim",
     "models": {
       "gemini": "gemini-2.0-flash",
-      "nim": "nvidia/nemotron-3-super-120b-a12b"
+      "nim": "nvidia/nemotron-3-super-120b-a12b",
+      "groq": "llama-3.3-70b-versatile"
     },
     "max_tokens": 2048,
     "temperature": 0.7,
@@ -46,15 +47,7 @@
     "active": null
   },
   "sandbox": {
-    "timeout": 30,
-    "binaries": {
-      "python3": "/data/data/com.termux/files/usr/bin/python3",
-      "node": "/data/data/com.termux/files/usr/bin/node",
-      "java": "/data/data/com.termux/files/usr/bin/java",
-      "javac": "/data/data/com.termux/files/usr/bin/javac"
-    },
-    "lib_paths": [
-      "/data/data/com.termux/files/usr/lib"
-    ]
+    "distro": "alpine",
+    "timeout": 30
   }
 }

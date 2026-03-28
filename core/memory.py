@@ -15,8 +15,8 @@ from typing import Any
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
-BASE_DIR = Path(__file__).parent.parent
-SESSIONS_DIR = BASE_DIR / "memory_store" / "sessions"
+BASE_DIR      = Path(__file__).parent.parent
+SESSIONS_DIR  = BASE_DIR / "memory_store" / "sessions"
 LONG_TERM_PATH = BASE_DIR / "memory_store" / "long_term.json"
 
 SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
@@ -42,14 +42,13 @@ class Session:
 
 @dataclass
 class MemoryEntry:
-    """A single long-term memory entry."""
-    key: str                           # unique identifier
-    value: Any                         # the stored value
+    key: str
+    value: Any
     category: str                      # "user" | "fact" | "preference" | "project" | "context"
     source: str                        # "agent" | "user" | "system"
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
-    importance: int = 1                # 1-3, higher = more important, shown first
+    importance: int = 1                # 1-3, higher = shown first
 
 
 # ── Memory class ──────────────────────────────────────────────────────────────
@@ -70,10 +69,12 @@ class Memory:
       - Agent can read/write via memory_tool.py
     """
 
+    _MAX_SUMMARY_ENTRIES = 20
+
     def __init__(self, memory_window: int = 20):
-        self.memory_window = memory_window
+        self.memory_window  = memory_window
         self._sessions: dict[str, Session] = {}
-        self._entries: dict[str, MemoryEntry] = {}   # key → MemoryEntry
+        self._entries: dict[str, MemoryEntry] = {}
         self._load_long_term()
 
     # ── Session management ────────────────────────────────────────────────────
@@ -93,7 +94,7 @@ class Memory:
             return False
 
         try:
-            data = json.loads(path.read_text())
+            data     = json.loads(path.read_text())
             messages = [Message(**m) for m in data.get("messages", [])]
             self._sessions[session_id] = Session(
                 session_id=session_id,
@@ -115,11 +116,11 @@ class Memory:
         role: str,
         content: str,
         tool_name: str | None = None,
-    ):
+    ) -> None:
         if session_id not in self._sessions:
             self._sessions[session_id] = Session(session_id=session_id)
 
-        msg = Message(role=role, content=content, tool_name=tool_name)
+        msg     = Message(role=role, content=content, tool_name=tool_name)
         session = self._sessions[session_id]
         session.messages.append(msg)
         session.updated_at = time.time()
@@ -138,7 +139,6 @@ class Memory:
             if msg.tool_name:
                 entry["tool_name"] = msg.tool_name
             result.append(entry)
-
         return result
 
     def get_session_text(self, session_id: str) -> str:
@@ -147,19 +147,18 @@ class Memory:
             return ""
 
         messages = self._sessions[session_id].messages
-        lines = []
+        lines    = []
         for msg in messages:
             prefix = {
-                "user": "User",
+                "user":      "User",
                 "assistant": "Vashishtha",
-                "tool": f"Tool({msg.tool_name})",
+                "tool":      f"Tool({msg.tool_name})",
             }.get(msg.role, msg.role)
             content = msg.content[:300] + "..." if len(msg.content) > 300 else msg.content
             lines.append(f"{prefix}: {content}")
-
         return "\n".join(lines)
 
-    def clear_session(self, session_id: str):
+    def clear_session(self, session_id: str) -> None:
         if session_id in self._sessions:
             del self._sessions[session_id]
             print(f"[memory] Cleared session from RAM: {session_id}")
@@ -176,31 +175,25 @@ class Memory:
     ) -> str:
         """
         Store or update a long-term memory entry.
-        If key exists, updates value and timestamp.
-
         Categories: user | fact | preference | project | context
         Importance: 1 (normal) | 2 (important) | 3 (critical)
         """
-        # Defensive cast — LLMs sometimes pass importance as string
         try:
             importance = int(importance)
         except (TypeError, ValueError):
             importance = 1
-        importance = max(1, min(3, importance))  # clamp to 1-3
+        importance = max(1, min(3, importance))
 
         if key in self._entries:
-            entry = self._entries[key]
-            entry.value = value
+            entry            = self._entries[key]
+            entry.value      = value
             entry.updated_at = time.time()
             entry.importance = max(entry.importance, importance)
             print(f"[memory] Updated: {key}")
         else:
             self._entries[key] = MemoryEntry(
-                key=key,
-                value=value,
-                category=category,
-                source=source,
-                importance=importance,
+                key=key, value=value,
+                category=category, source=source, importance=importance,
             )
             print(f"[memory] Remembered: {key}")
 
@@ -208,7 +201,6 @@ class Memory:
         return f"Remembered: {key} = {value}"
 
     def forget(self, key: str) -> str:
-        """Remove a long-term memory entry."""
         if key in self._entries:
             del self._entries[key]
             self._save_long_term()
@@ -219,36 +211,25 @@ class Memory:
     # ── Long-term memory — read ───────────────────────────────────────────────
 
     def recall(self, key: str) -> Any | None:
-        """Retrieve a specific memory entry by key."""
         entry = self._entries.get(key)
         return entry.value if entry else None
 
     def search(self, query: str) -> list[dict]:
-        """
-        Search memory entries by key or value (case-insensitive substring match).
-        Returns list of matching entries sorted by importance.
-        """
+        """Search entries by key or value (case-insensitive substring)."""
         query_lower = query.lower()
         results = []
-
         for entry in self._entries.values():
-            key_match = query_lower in entry.key.lower()
-            val_str = str(entry.value).lower()
-            val_match = query_lower in val_str
-
-            if key_match or val_match:
+            if query_lower in entry.key.lower() or query_lower in str(entry.value).lower():
                 results.append({
-                    "key": entry.key,
-                    "value": entry.value,
-                    "category": entry.category,
+                    "key":       entry.key,
+                    "value":     entry.value,
+                    "category":  entry.category,
                     "importance": entry.importance,
                 })
-
         results.sort(key=lambda x: x["importance"], reverse=True)
         return results
 
     def list_by_category(self, category: str) -> list[dict]:
-        """List all entries in a category."""
         return [
             {"key": e.key, "value": e.value, "importance": e.importance}
             for e in self._entries.values()
@@ -256,47 +237,39 @@ class Memory:
         ]
 
     def get_all(self) -> dict[str, Any]:
-        """Return full long-term memory as dict."""
         return {k: asdict(v) for k, v in self._entries.items()}
 
     def get_long_term_summary(self) -> str:
         """
         Concise summary for system prompt injection.
-        Shows important entries first, grouped by category.
-        Stays short — not a dump, just context.
+        Important entries first, capped at _MAX_SUMMARY_ENTRIES.
+        Empty string values silently skipped — template fields don't pollute context.
         """
         if not self._entries:
             return ""
 
-        # Sort by importance desc, then by category
-        entries = sorted(
+        sorted_entries = sorted(
             self._entries.values(),
-            key=lambda e: (-e.importance, e.category)
+            key=lambda e: (-e.importance, e.category),
         )
 
-        lines = []
-        seen_categories = set()
-
-        for entry in entries:
-            cat = entry.category
-            if cat not in seen_categories:
-                seen_categories.add(cat)
-
+        lines: list[str] = []
+        for entry in sorted_entries:
             val = entry.value
             if isinstance(val, dict):
                 val = json.dumps(val, ensure_ascii=False)
             elif isinstance(val, list):
                 val = ", ".join(str(v) for v in val[:5])
 
-            # Skip empty string values — template fields not yet filled
+            # Skip blank template placeholders
             if val == "" or val == "null" or val is None:
                 continue
 
-            lines.append(f"- [{cat}] {entry.key}: {val}")
+            lines.append(f"- [{entry.category}] {entry.key}: {val}")
 
-            # Cap at 20 entries — don't flood the system prompt
-            if len(lines) >= 20:
-                remaining = len(self._entries) - 20
+            if len(lines) >= self._MAX_SUMMARY_ENTRIES:
+                # Remaining = total entries not yet shown (includes skipped blank ones)
+                remaining = len(sorted_entries) - sorted_entries.index(entry) - 1
                 if remaining > 0:
                     lines.append(f"- ... ({remaining} more entries)")
                 break
@@ -307,23 +280,17 @@ class Memory:
         return "## Long-term memory\n" + "\n".join(lines)
 
     # ── Legacy compatibility ──────────────────────────────────────────────────
-    # Keep these so existing code doesn't break
 
     def get_long_term(self) -> dict:
-        """Return full memory as dict. Legacy endpoint."""
         return self.get_all()
 
-    def update_long_term(self, key: str, value: Any):
-        """Legacy method — maps to remember()."""
+    def update_long_term(self, key: str, value: Any) -> None:
         self.remember(key, value, category="context", source="system")
 
-    def add_fact(self, fact: str):
-        """Legacy method — store fact with auto-generated key."""
-        key = f"fact_{int(time.time())}"
-        self.remember(key, fact, category="fact", source="agent")
+    def add_fact(self, fact: str) -> None:
+        self.remember(f"fact_{int(time.time())}", fact, category="fact", source="agent")
 
-    def forget_fact(self, fact: str):
-        """Legacy method — search and remove matching fact."""
+    def forget_fact(self, fact: str) -> None:
         for key, entry in list(self._entries.items()):
             if entry.category == "fact" and str(entry.value) == fact:
                 self.forget(key)
@@ -331,7 +298,7 @@ class Memory:
 
     # ── Private helpers ───────────────────────────────────────────────────────
 
-    def _save_session(self, session_id: str):
+    def _save_session(self, session_id: str) -> None:
         session = self._sessions.get(session_id)
         if not session:
             return
@@ -341,22 +308,20 @@ class Memory:
                 "session_id": session.session_id,
                 "created_at": session.created_at,
                 "updated_at": session.updated_at,
-                "messages": [asdict(m) for m in session.messages],
+                "messages":   [asdict(m) for m in session.messages],
             }
             path.write_text(json.dumps(data, indent=2, ensure_ascii=False))
         except Exception as e:
             print(f"[memory] Failed to save session {session_id}: {e}")
 
-    def _save_long_term(self):
+    def _save_long_term(self) -> None:
         try:
             data = {k: asdict(v) for k, v in self._entries.items()}
-            LONG_TERM_PATH.write_text(
-                json.dumps(data, indent=2, ensure_ascii=False)
-            )
+            LONG_TERM_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False))
         except Exception as e:
             print(f"[memory] Failed to save long-term: {e}")
 
-    def _load_long_term(self):
+    def _load_long_term(self) -> None:
         if not LONG_TERM_PATH.exists():
             self._migrate_legacy()
             return
@@ -364,15 +329,13 @@ class Memory:
         try:
             data = json.loads(LONG_TERM_PATH.read_text())
 
-            # Detect legacy format (flat dict with user/projects/facts keys)
+            # Detect legacy format
             if "user" in data or "facts" in data or "projects" in data:
                 self._migrate_legacy(data)
                 return
 
-            # New format — load MemoryEntry objects
             for key, entry_data in data.items():
                 try:
-                    # Defensive cast — importance may be string from LLM
                     if "importance" in entry_data:
                         try:
                             entry_data["importance"] = int(entry_data["importance"])
@@ -388,30 +351,18 @@ class Memory:
             print(f"[memory] Failed to load long-term: {e}")
             self._migrate_legacy()
 
-    def _migrate_legacy(self, data: dict | None = None):
+    def _migrate_legacy(self, data: dict | None = None) -> None:
         """Initialize fresh memory or convert old long_term.json format."""
         if data is None:
-            # Fresh start — seed with empty template fields.
-            # Agent will fill these in through conversation.
-            # No personal data — this is the production/clone-ready template.
-            self.remember(
-                "device", "",
-                category="context", source="system", importance=2
-            )
+            self.remember("device", "", category="context", source="system", importance=2)
             self.remember(
                 "translation_preferences",
-                {
-                    "default_from": "auto",
-                    "default_to": "hi",
-                    "frequent_pairs": [],
-                    "preferred_model_loaded": None,
-                },
-                category="preference", source="system", importance=1
+                {"default_from": "auto", "default_to": "hi", "frequent_pairs": [], "preferred_model_loaded": None},
+                category="preference", source="system", importance=1,
             )
             print("[memory] Initialized fresh long-term memory")
             return
 
-        # ── Migrate from old format ───────────────────────────────────────────
         user = data.get("user", {})
         if user.get("name"):
             self.remember("user_name", user["name"], category="user", source="system", importance=3)
@@ -421,16 +372,12 @@ class Memory:
         if user.get("devices", {}).get("main"):
             self.remember("device", user["devices"]["main"], category="context", source="system", importance=2)
 
-        # Migrate facts
         for i, fact in enumerate(data.get("facts", [])):
             self.remember(f"fact_{i}", fact, category="fact", source="system")
 
-        # Migrate translation prefs
         trans = data.get("translation_preferences", {})
         if trans:
             self.remember("translation_preferences", trans, category="preference", source="system")
-
-        # Note: projects deliberately NOT migrated — personal data
 
         print(f"[memory] Migrated legacy memory — {len(self._entries)} entries")
         self._save_long_term()

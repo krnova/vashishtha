@@ -16,20 +16,29 @@ load_dotenv()
 
 CONFIG_PATH = Path(__file__).parent / "config.json"
 
+# ── Provider → env var mapping ────────────────────────────────────────────────
+
+_PROVIDER_ENV = {
+    "nim":    "NIM_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+    "groq":   "GROQ_API_KEY",
+}
+
 
 def check_env(config: dict):
     """Check that the right API key is set for the configured provider."""
     provider = config.get("api", {}).get("provider", "gemini")
+    env_var = _PROVIDER_ENV.get(provider)
 
-    if provider == "nim":
-        if not os.getenv("NIM_API_KEY"):
-            print("✗ NIM_API_KEY not set. Add it to your .env file.")
-            print("  (config.json provider is set to 'nim')")
-            sys.exit(1)
-    else:
-        if not os.getenv("GEMINI_API_KEY"):
-            print("✗ GEMINI_API_KEY not set. Add it to your .env file.")
-            sys.exit(1)
+    if env_var is None:
+        print(f"✗ Unknown provider: '{provider}'. Check config.json api.provider.")
+        print(f"  Supported: {', '.join(_PROVIDER_ENV.keys())}")
+        sys.exit(1)
+
+    if not os.getenv(env_var):
+        print(f"✗ {env_var} not set. Add it to your .env file.")
+        print(f"  (config.json provider is set to '{provider}')")
+        sys.exit(1)
 
 
 def detect_capabilities(config: dict) -> dict:
@@ -72,8 +81,8 @@ def detect_capabilities(config: dict) -> dict:
         print(f"[main] ⚠ Could not write config.json: {e}")
 
     # ── Report ────────────────────────────────────────────────────────────────
-    root_str  = "✓ root"    if root_available else "✗ no root"
-    api_str   = "✓ termux-api" if termux_api   else "✗ no termux-api"
+    root_str = "✓ root"       if root_available else "✗ no root"
+    api_str  = "✓ termux-api" if termux_api     else "✗ no termux-api"
     print(f"[main] Device: {root_str} | {api_str}")
 
     return config

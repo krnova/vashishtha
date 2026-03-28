@@ -24,16 +24,9 @@ Vashishtha is an agentic LLM loop that runs on your phone. It can:
 git clone https://github.com/krnova/vashishtha
 cd vashishtha
 
-# 2. Install dependencies
-pip install -r requirements.txt --break-system-packages
-
-# 3. Configure
-cp config.example.json config.json
-cp .env.example .env
-# Edit .env — add your NIM_API_KEY or GEMINI_API_KEY
-
-# 4. Run
-python main.py
+# 2. Install
+cp va $PREFIX/bin
+va install
 ```
 
 On first run, Vashishtha auto-detects root and termux-api availability and updates `config.json`.
@@ -48,7 +41,10 @@ va run                        # start agent daemon
 va stop                       # stop agent daemon
 va restart                    # restart agent daemon
 va status                     # daemon status + model info
-va logs                       # tail agent logs
+va logs                       # tail agent logs (foreground)
+va logs start                 # stream logs in background
+va logs stop                  # stop background log stream
+va logs clear                 # clear all logs
 
 va query                      # interactive REPL (gold output)
 va query -t                   # REPL with thinking traces
@@ -59,6 +55,8 @@ va query -v "your message"    # single query verbose
 
 va new-session                # clear session
 va session                    # show current session ID
+
+va install                    # run the install script
 ```
 
 ---
@@ -72,7 +70,7 @@ Root is auto-detected at startup. Your feature set adjusts automatically.
 | Shell commands | ✅ All standard commands | ✅ + `su -c` for root ops |
 | File read/write | ✅ Termux home + storage | ✅ + system paths |
 | Web search & research | ✅ | ✅ |
-| Code execution (sandbox) | ✅ proot-based | ✅ proot-based |
+| Code execution (sandbox) | ✅ Alpine via proot-distro | ✅ Alpine via proot-distro |
 | Translation | ✅ | ✅ |
 | Memory | ✅ | ✅ |
 | termux-api tools* | ✅ if installed | ✅ if installed |
@@ -92,13 +90,15 @@ Configure in `config.json`:
   "provider": "nim",
   "models": {
     "nim": "nvidia/nemotron-3-super-120b-a12b",
-    "gemini": "gemini-2.0-flash"
+    "gemini": "gemini-2.0-flash",
+    "groq": "llama-3.3-70b-versatile"
   }
 }
 ```
 
 - **NIM** (default) — NVIDIA NIM API. Supports thinking mode (`-t` flag).
 - **Gemini** — Google Gemini via `google-genai`.
+- **Groq** — Fast inference via Groq API. OpenAI-compatible. `qwen-qwq-32b` supports thinking mode (`-t` flag).
 
 Switch providers: change `provider` in `config.json`, restart.
 
@@ -136,14 +136,19 @@ va query "list my projects"
 
 ## Code Execution
 
-Code runs in an isolated proot sandbox — no access to your files or API keys.
+Code runs in an **isolated Alpine Linux container** via proot-distro — host filesystem completely hidden.
 
 ```bash
+# One-time sandbox setup done with
+va install
+
+# Then just ask:
 va query "run this python: print('hello')"
 # Agent asks for confirmation, then executes in sandbox
 ```
 
-Supported languages: Python, JavaScript (Node.js), Java (if installed).  
+Supported languages: Python, JavaScript (Node.js), Java.  
+Agent can install additional Alpine packages autonomously via `apk add`.  
 Check availability: `va query "sandbox status"`
 
 ---
@@ -156,7 +161,7 @@ tools/         All agent tools (web, shell, files, device, code, translate)
 interface/     Voice (Phase 2), Web UI (Phase 3) — stubs
 skills/        .md context files loaded into every system prompt
 memory_store/  Session logs + long-term memory (gitignored)
-sandbox/       proot sandbox filesystem (gitignored)
+sandbox/saved/ Persisted code files
 projects/      Symlinks to managed projects
 ```
 

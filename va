@@ -6,14 +6,18 @@
 #   va stop             stop daemon
 #   va restart          restart daemon
 #   va status           show daemon status
-#   va logs             tail daemon logs
+#   va logs             tail agent logs (foreground)
+#   va logs start       stream logs in background
+#   va logs stop        stop background log stream
+#   va logs clear       delete all logs
 #   va query            interactive REPL (default mode)
 #   va query -t         interactive REPL with thinking traces
 #   va query -v         interactive REPL with verbose parsed output
 #   va query MSG        single shot query
 #   va new-session      clear current session
 #   va session          show current session ID
-#   va                  cd to vashishtha dir
+#   va install          run installation script
+#   va                  show help
 
 VASHISHTHA_DIR="$HOME/vashishtha"
 API_URL="http://127.0.0.1:5000"
@@ -21,6 +25,7 @@ SESSION_FILE="$VASHISHTHA_DIR/.last_session"
 STATUS_FILE="$VASHISHTHA_DIR/.last_status"
 PID_FILE="$VASHISHTHA_DIR/.vashishtha.pid"
 LOG_FILE="$HOME/.vashishtha.log"
+LOG_PID_FILE="$VASHISHTHA_DIR/.vashishtha.log.pid"
 
 # ── Colors ────────────────────────────────────────────────────────────────────
 GOLD='\033[38;5;220m'
@@ -60,7 +65,7 @@ _is_running() {
 }
 
 _check_server() {
-  curl -s --max-time 2 "$API_URL/health" > /dev/null 2>&1
+  curl -s --max-time 5 "$API_URL/health" > /dev/null 2>&1
 }
 
 # ── Animated server wait ──────────────────────────────────────────────────────
@@ -69,7 +74,6 @@ _wait_for_server() {
   local max_tries="${1:-20}"
   local delay="${2:-0.5}"
 
-  # Spinner in background subshell
   (
     local i=0
     local frames=("   " ".  " ".. " "...")
@@ -94,7 +98,7 @@ _wait_for_server() {
 
   kill "$_spinner_pid" 2>/dev/null
   wait "$_spinner_pid" 2>/dev/null
-  printf "\r\033[K"   # erase the spinner line
+  printf "\r\033[K"
 
   return $_result
 }
@@ -256,12 +260,10 @@ thinking = d.get('thinking', '')
 reply    = d.get('reply', '')
 pending  = d.get('pending_action')
 
-# Header
 status_color = GREEN if status == 'done' else (ORANGE if status == 'confirm' else RED)
 print(f'{DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{RESET}')
 print(f'{DIM}session:{RESET} {BLUE}{session}{RESET}  {DIM}status:{RESET} {status_color}{status}{RESET}')
 
-# Actions
 if actions:
     print()
     for i, a in enumerate(actions, 1):
@@ -272,7 +274,6 @@ if actions:
 
         print(f'{DIM}[{i}] {tool}{RESET}')
 
-        # Args
         args_str = json.dumps(args, ensure_ascii=False)
         if len(args_str) < 80:
             print(f'    {DIM}args:{RESET} {args_str}')
@@ -283,7 +284,6 @@ if actions:
                     v_str = v_str[:77] + '...'
                 print(f'    {DIM}{k}:{RESET} {v_str}')
 
-        # Result
         if result:
             result_lines = result.strip().splitlines()
             if tool == 'execute_code':
@@ -301,7 +301,6 @@ if actions:
                     suffix = f'  {DIM}[truncated]{RESET}'
                 print(f'    {DIM}result:{RESET} {preview}{suffix}')
 
-        # Thinking per tool
         if th:
             th_lines = th.strip().splitlines()
             print(f'    {DIM}thinking:{RESET}')
@@ -311,10 +310,9 @@ if actions:
                 print(f'    {CYAN}... ({len(th_lines)-5} more lines){RESET}')
         print()
 
-# Top-level thinking
 last_tool_thinking = actions[-1].get('thinking', '') if actions else ''
 if thinking and thinking != last_tool_thinking:
-    label = 'final thinking:' if actions else 'thinking:'
+    label    = 'final thinking:' if actions else 'thinking:'
     th_lines = thinking.strip().splitlines()
     print(f'{DIM}{label}{RESET}')
     for line in th_lines[:8]:
@@ -323,12 +321,10 @@ if thinking and thinking != last_tool_thinking:
         print(f'{MAGENTA}... ({len(th_lines)-8} more lines){RESET}')
     print()
 
-# Pending
 if pending:
     print(f'{DIM}pending:{RESET} {ORANGE}{pending.get(\"tool\",\"\")} {json.dumps(pending.get(\"args\",{}))}{RESET}')
     print()
 
-# Reply
 print(f'{DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{RESET}')
 if status == 'confirm':
     print(ORANGE + reply + RESET)
@@ -357,15 +353,14 @@ _repl() {
 
   while true; do
     if [ "$(_get_status)" = "confirm" ]; then
-      printf "${ORANGE}confirm > ${RESET}"
+      IFS= read -re -p "$(printf "${ORANGE}confirm > ${RESET}")" input || break
     else
-      printf "${GREEN}> ${RESET}"
+      IFS= read -re -p "$(printf "${GREEN}> ${RESET}")" input || break
     fi
 
-    local input
-    IFS= read -r input || break
-
     [ -z "$input" ] && continue
+
+    history -s "$input"
 
     case "$input" in
       exit|quit) break ;;
@@ -415,7 +410,8 @@ _daemon_start() {
     return
   fi
 
-  nohup python "$VASHISHTHA_DIR/main.py" >> "$LOG_FILE" 2>&1 &
+  # Use python3 explicitly — python symlink not guaranteed in Termux
+  nohup python3 "$VASHISHTHA_DIR/main.py" >> "$LOG_FILE" 2>&1 &
   echo $! > "$PID_FILE"
 
   if _wait_for_server 20 0.5; then
@@ -465,7 +461,7 @@ _daemon_status() {
   fi
 }
 
-# ── Help ─────────────────────────────────────────────────────────────────────
+# ── Help ──────────────────────────────────────────────────────────────────────
 
 _show_help() {
   printf "Usage:\n"
@@ -474,7 +470,10 @@ _show_help() {
   printf "  ${GREEN}va stop${RESET}                 stop agent daemon\n"
   printf "  ${GREEN}va restart${RESET}              restart agent daemon\n"
   printf "  ${GREEN}va status${RESET}               daemon status\n"
-  printf "  ${GREEN}va logs${RESET}                 tail agent logs\n"
+  printf "  ${GREEN}va logs${RESET}                 tail agent logs (foreground)\n"
+  printf "  ${GREEN}va logs start${RESET}           stream logs in background\n"
+  printf "  ${GREEN}va logs stop${RESET}            stop background log stream\n"
+  printf "  ${GREEN}va logs clear${RESET}           clear all logs\n"
   printf "  ${GREEN}va query${RESET}                interactive REPL\n"
   printf "  ${GREEN}va query -t${RESET}             REPL with thinking traces\n"
   printf "  ${GREEN}va query -v${RESET}             REPL with verbose output\n"
@@ -483,6 +482,7 @@ _show_help() {
   printf "  ${GREEN}va query -v 'msg'${RESET}       single query verbose\n"
   printf "  ${GREEN}va session${RESET}              show current session ID\n"
   printf "  ${GREEN}va new-session${RESET}          clear session\n"
+  printf "  ${GREEN}va install${RESET}              run the install script\n"
 }
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -511,7 +511,35 @@ case "$1" in
     ;;
 
   logs)
-    tail -f "$LOG_FILE"
+    shift
+    case "${1:-follow}" in
+      start)
+        if [ -f "$LOG_PID_FILE" ] && kill -0 "$(cat "$LOG_PID_FILE")" 2>/dev/null; then
+          printf "${ORANGE}Logs already streaming (PID $(cat "$LOG_PID_FILE"))${RESET}\n"
+        else
+          tail -f "$LOG_FILE" &
+          echo $! > "$LOG_PID_FILE"
+          printf "${GREEN}✓ Log stream started (PID $(cat "$LOG_PID_FILE"))${RESET}\n"
+        fi
+        ;;
+      stop)
+        if [ -f "$LOG_PID_FILE" ] && kill -0 "$(cat "$LOG_PID_FILE")" 2>/dev/null; then
+          kill "$(cat "$LOG_PID_FILE")" 2>/dev/null
+          rm -f "$LOG_PID_FILE"
+          printf "${DIM}Log stream stopped.${RESET}\n"
+        else
+          printf "${DIM}No active log stream.${RESET}\n"
+          rm -f "$LOG_PID_FILE"
+        fi
+        ;;
+      clear)
+        > "$LOG_FILE"
+        printf "${DIM}Logs cleared.${RESET}\n"
+        ;;
+      follow|*)
+        tail -f "$LOG_FILE"
+        ;;
+    esac
     ;;
 
   query)
@@ -567,6 +595,10 @@ case "$1" in
     else
       printf "${DIM}No active session.${RESET}\n"
     fi
+    ;;
+
+  install)
+    $(echo $SHELL) $VASHISHTHA_DIR/install.sh
     ;;
 
   *)
