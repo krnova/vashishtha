@@ -133,7 +133,8 @@ class GeminiProvider:
         self.temperature = temperature
         self.gtypes = gtypes
 
-        # Thinking support — placeholder for future Gemini models that support it
+        # thinking_enabled read from config for API consistency with NIM/Groq.
+        # Not yet used by Gemini — future models may support it.
         thinking_cfg = (config or {}).get("thinking", {})
         self.thinking_enabled = thinking_cfg.get("enabled", False)
 
@@ -362,8 +363,8 @@ class NIMProvider(_OpenAICompatibleProvider):
     def __init__(self, model: str, max_tokens: int, temperature: float, config: dict | None = None, **kwargs):
         super().__init__(model, max_tokens, temperature)
 
-        thinking_cfg          = (config or {}).get("thinking", {})
-        self.thinking_enabled = thinking_cfg.get("enabled", False)
+        thinking_cfg             = (config or {}).get("thinking", {})
+        self.thinking_enabled    = thinking_cfg.get("enabled", False)
         self.thinking_max_tokens = thinking_cfg.get("max_tokens", 1024)
 
         status = "ON" if self.thinking_enabled else "OFF"
@@ -373,8 +374,8 @@ class NIMProvider(_OpenAICompatibleProvider):
         if self.thinking_enabled:
             kwargs["extra_body"] = {
                 "nvext": {
-                    "thinking":             {"type": "enabled"},
-                    "max_thinking_tokens":  self.thinking_max_tokens,
+                    "thinking":            {"type": "enabled"},
+                    "max_thinking_tokens": self.thinking_max_tokens,
                 }
             }
 
@@ -443,8 +444,8 @@ class Brain:
         tool_schemas: list[dict] | None = None,
         memory=None,
     ) -> BrainResponse:
-        skills       = _load_skills()
-        long_term    = memory.get_long_term_summary() if memory else ""
+        skills        = _load_skills()
+        long_term     = memory.get_long_term_summary() if memory else ""
         system_prompt = _build_system_prompt(skills, long_term)
         return self.provider.call(system_prompt, messages, tool_schemas)
 

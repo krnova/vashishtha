@@ -43,6 +43,7 @@ Tool functions return strings always — agent reads string output.
 - Code must be self-contained — no stdin
 
 ## Sandbox Bootstrap (one-time setup)
+`va install` handles this automatically. Manual steps only if installing selectively:
 ```bash
 pkg install proot-distro
 proot-distro install alpine
@@ -55,6 +56,8 @@ Install Alpine packages autonomously via shell tool — no confirmation needed, 
 proot-distro login alpine -- apk add <package>
 ```
 Examples: `apk add curl`, `apk add git`, `apk add gcc musl-dev`, `apk add rust`
+
+**After installing** — binary availability is cached per-process. Restart the agent (`va restart`) or run `va query "sandbox status"` to trigger re-check.
 
 ## Project Linking
 To link a project into Vashishtha:
